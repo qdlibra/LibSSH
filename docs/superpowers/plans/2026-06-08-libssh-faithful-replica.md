@@ -112,11 +112,11 @@ Expected: one milestone commit.
 - Modify: `ui/app.slint`
 - Create: `ui/fonts/*`
 
-- [ ] Recreate all exported structs, properties, and callbacks from `09-UI-slint.md`.
-- [ ] Wire fake/empty models in `app.rs` so the UI opens with welcome tab, empty sessions, sidebar placeholders, settings/download/about surfaces.
-- [ ] Ensure `@tr(...)` msgids are English and font imports match the blueprint.
-- [ ] Run `cargo check` and `cargo run`.
-- [ ] Commit with `feat: add static Slint UI skeleton`.
+- [x] Recreate all exported structs, properties, and callbacks from `09-UI-slint.md`.
+- [x] Wire fake/empty models in `app.rs` so the UI opens with welcome tab, empty sessions, sidebar placeholders, settings/download/about surfaces.
+- [x] Ensure `@tr(...)` msgids are English and font imports match the blueprint.
+- [x] Run `cargo check` and `cargo run`.
+- [x] Commit with `feat: add static Slint UI skeleton`.
 
 ### Task 3: M3 Session CRUD And SSH Config Import
 

@@ -1,20 +1,709 @@
+// Embedded cross-platform fonts (compile-time): terminal monospace + UI icons.
+// Embedding means Windows / Linux / macOS all render the same glyphs without
+// relying on Consolas / Segoe MDL2 Assets being installed.
+//
+// Cascadia Mono: full box-drawing + block-elements + braille (needed by btop
+//   for its sparkline graphs; JetBrains Mono lacks braille → garbled output).
+// Material Icons: open-source icon font replacing Windows-only Segoe MDL2 Assets.
+import "fonts/CascadiaMono-Regular.ttf";
+import "fonts/CascadiaMono-Bold.ttf";
+import "fonts/MaterialIcons-Regular.ttf";
+
 import { Theme } from "theme.slint";
+import { Sidebar, DiskInfo } from "sidebar.slint";
+import { TabBar, TabInfo } from "tabs.slint";
+import { Welcome, SessionInfo } from "welcome.slint";
+import { SessionDialog, SessionDraft } from "session_dialog.slint";
+import { TerminalView, TermSpan, TermMatch } from "terminal_view.slint";
+import { SftpEntry, SftpTreeNode } from "sftp_panel.slint";
+
+export { SessionInfo, SessionDraft, TabInfo, SftpEntry, SftpTreeNode }
+
+// --- TerminalState ---------------------------------------------------------
+// Per-terminal view-model exposed to Rust. A TabInfo has the metadata; the
+// TerminalState carries the streaming log + status line. Kept as a parallel
+// model so opening/closing tabs doesn't churn the log strings.
+// One file-transfer record shown in the download manager.
+export struct TransferInfo {
+    id: string,
+    name: string,
+    detail: string,   // "2.3 MB/5.0 MB" | "已完成" | "失败"
+    percent: float,   // 0.0..1.0
+    state: int,       // 0 active / 1 done / 2 error
+    is-upload: bool,
+}
+
+export struct TerminalState {
+    id: string,
+    status: string,
+    spans: [TermSpan],     // coloured runs of the visible terminal screen
+    cursor-row: int,       // cursor cell on the grid
+    cursor-col: int,
+    rows-used: int,        // content rows, for viewport sizing
+    is-alt-screen: bool,
+    find-matches: [TermMatch], // search-highlight rectangles
+    selection: [TermMatch],    // drag-selection highlight rectangles
+
+    // SFTP panel state
+    sftp-path: string,
+    sftp-entries: [SftpEntry],
+    sftp-status: string,
+    sftp-loading: bool,
+    sftp-tree-nodes: [SftpTreeNode],
+}
 
 export component AppWindow inherits Window {
     title: "meatshell";
+    icon: @image-url("../assets/icon.png");
     min-width: 960px;
     min-height: 600px;
+    preferred-width: 1200px;
+    preferred-height: 760px;
     background: Theme.bg-root;
 
-    Rectangle {
-        background: Theme.bg-root;
+    // --- Sidebar data ------------------------------------------------------
+    in property <string> connection-state: @tr("Not connected");
+    in property <int> conn-state;                       // 0 gray / 1 green / 2 yellow
+    in property <string> resource-title: @tr("Local resources");    // @tr("Local resources") | @tr("Server resources")
+    in property <float> cpu-percent;
+    in property <float> mem-percent;
+    in property <float> swap-percent;
+    in property <string> mem-detail;
+    in property <string> swap-detail;
+    // Dual network panel.  "top" follows the active tab (remote NIC on a
+    // session tab, local on the welcome tab); "bot" is always the local machine.
+    in property <string> net-top-up;        // ↑ tx rate text
+    in property <string> net-top-down;      // ↓ rx rate text
+    in property <[float]> net-top-history;
+    in property <string> net-bot-up;
+    in property <string> net-bot-down;
+    in property <[float]> net-bot-history;
+    in property <[string]> net-ifaces;      // remote NIC names for the selector
+    in property <string> net-selected;      // currently selected NIC
+    in property <bool> net-show-selector;   // only on a live session tab
+    in property <[DiskInfo]> disks;         // active tab's filesystem usage
+    callback select-net-iface(string);
 
+    // --- Top-right popups --------------------------------------------------
+    in-out property <bool> download-open: false;  // download manager popup
+    in-out property <bool> settings-open: false;  // settings menu popup
+    in-out property <bool> about-open: false;     // centered About dialog
+    in property <string> download-dir;      // preset SFTP download folder ("" = ask)
+    in property <[TransferInfo]> transfers; // download/upload records (newest first)
+    in property <[string]> about-libs;      // open-source libraries used
+    in-out property <bool> lang-en: false;  // current UI language (false = 中文)
+    in-out property <length> sftp-panel-height: 220px; // shared; lets Rust locate the drop zone
+    callback pick-download-dir();            // open a folder picker
+    callback open-download-dir();            // reveal the folder in the OS
+    callback clear-transfers();              // wipe the transfer history
+    callback set-language(string);           // switch UI language ("zh" / "en")
+
+    // --- Session list ------------------------------------------------------
+    in property <[SessionInfo]> sessions;
+
+    // --- Tabs --------------------------------------------------------------
+    in property <[TabInfo]> tabs;
+    in-out property <string> active-tab-id: "welcome";
+    in property <[TerminalState]> terminals;
+
+    // --- Dialog state ------------------------------------------------------
+    in-out property <bool> dialog-open: false;
+    in-out property <bool> dialog-editing: false;
+    in-out property <string> dialog-id;
+    in-out property <string> dialog-name;
+    in-out property <string> dialog-host;
+    in-out property <string> dialog-port: "22";
+    in-out property <string> dialog-user: "root";
+    in-out property <string> dialog-auth: "password";
+    in-out property <string> dialog-password;
+    in-out property <string> dialog-key-path;
+
+    // --- Callbacks up to Rust ---------------------------------------------
+    callback new-session-clicked();
+    callback import-ssh-config();             // import hosts from ~/.ssh/config
+    in-out property <string> ssh-import-hint;  // result text shown after import
+    callback connect-session(string /* session-id */);
+    callback edit-session(string /* session-id */);
+    callback remove-session(string /* session-id */);
+    callback session-dialog-submit(SessionDraft);
+    callback session-dialog-cancel();
+    callback session-dialog-pick-key();
+
+    callback tab-selected(string);
+    callback tab-closed(string);
+    callback new-tab-clicked();
+    // Asks Rust to recompute the sidebar (status + resources) for whatever tab
+    // is now active.  Fired on every active-tab change, UI- or code-driven.
+    callback refresh-sidebar();
+    changed active-tab-id => { root.refresh-sidebar(); }
+
+    // Raw keystroke forwarding: Rust converts key+modifiers to PTY bytes.
+    callback send-key(string /* tab-id */, string /* key */, bool /* ctrl */, bool /* alt */, bool /* shift */);
+    // Notifies Rust of a PTY resize (pixel dimensions; Rust converts to cols/rows).
+    callback terminal-resize(string /* tab-id */, float /* width-px */, float /* height-px */);
+
+    // --- SFTP callbacks ---------------------------------------------------
+    // Navigate to a new remote directory (or ".." to go up).
+    callback sftp-navigate(string /* tab-id */, string /* path */);
+    // Trigger a download: Rust opens a save-folder dialog then transfers.
+    callback sftp-download(string /* tab-id */, string /* remote-path */);
+    // Trigger an upload: Rust opens a file-picker dialog then transfers.
+    callback sftp-upload-clicked(string /* tab-id */, string /* remote-dir */);
+    // Refresh the current directory listing.
+    callback sftp-refresh(string /* tab-id */, string /* path */);
+    // Toggle expand/collapse of a tree node (also navigates to that directory).
+    callback sftp-tree-expand(string /* tab-id */, string /* path */);
+    callback sftp-delete(string /* tab-id */, string /* path */);
+    callback sftp-view(string /* tab-id */, string /* path */);
+    callback sftp-edit(string /* tab-id */, string /* path */);
+
+    // --- Clipboard callbacks ----------------------------------------------
+    // Paste clipboard text into the active terminal.
+    callback paste-from-clipboard(string /* tab-id */);
+    // Copy the current terminal screen buffer to the clipboard.
+    callback copy-terminal-text(string /* tab-id */);
+    // Clear a session's terminal buffer (its visible screen + scrollback).
+    callback clear-terminal(string /* tab-id */);
+    // Recompute search highlights for a session's visible screen.
+    callback find-query-changed(string /* tab-id */, string /* query */);
+    // Scroll a session's scrollback history by N lines (+ = up/older).
+    callback terminal-scroll(string /* tab-id */, int /* delta-lines */);
+    // Drag-selection lifecycle (grid row/col coordinates).
+    callback term-select-start(string /* tab-id */, int /* row */, int /* col */);
+    callback term-select-update(string /* tab-id */, int /* row */, int /* col */);
+    callback term-select-end(string /* tab-id */);
+    callback term-select-autoscroll(string /* tab-id */, int /* dir */);
+
+    HorizontalLayout {
+        spacing: 0;
+
+        // Left sidebar
+        Sidebar {
+            connection-state: root.connection-state;
+            conn-state: root.conn-state;
+            resource-title: root.resource-title;
+            cpu-percent: root.cpu-percent;
+            mem-percent: root.mem-percent;
+            swap-percent: root.swap-percent;
+            mem-detail: root.mem-detail;
+            swap-detail: root.swap-detail;
+            net-top-up: root.net-top-up;
+            net-top-down: root.net-top-down;
+            net-top-history: root.net-top-history;
+            net-bot-up: root.net-bot-up;
+            net-bot-down: root.net-bot-down;
+            net-bot-history: root.net-bot-history;
+            net-ifaces: root.net-ifaces;
+            net-selected: root.net-selected;
+            net-show-selector: root.net-show-selector;
+            disks: root.disks;
+            select-net-iface(i) => { root.select-net-iface(i); }
+        }
+
+        // Right side: tabs + content
+        VerticalLayout {
+            spacing: 0;
+            horizontal-stretch: 1;
+
+            TabBar {
+                tabs: root.tabs;
+                active-id: root.active-tab-id;
+                tab-selected(id) => {
+                    root.active-tab-id = id;
+                    root.tab-selected(id);
+                }
+                tab-closed(id) => { root.tab-closed(id); }
+                new-tab() => { root.new-tab-clicked(); }
+            }
+
+            // Content area swaps based on active tab kind.
+            Rectangle {
+                vertical-stretch: 1;
+                background: Theme.bg-root;
+
+                // Welcome tab
+                if root.active-tab-id == "welcome" : Welcome {
+                    sessions: root.sessions;
+                    import-hint: root.ssh-import-hint;
+                    new-session => { root.new-session-clicked(); }
+                    import-ssh-config => { root.import-ssh-config(); }
+                    connect-session(id) => { root.connect-session(id); }
+                    edit-session(id) => { root.edit-session(id); }
+                    remove-session(id) => { root.remove-session(id); }
+                }
+
+                // Terminal tabs — one TerminalView per terminal state. Only
+                // the one matching `active-tab-id` is visible. Slint doesn't
+                // allow nesting `if` directly inside a `for`, so we toggle
+                // visibility instead and rely on the layout to overlap them.
+                for term[i] in root.terminals : TerminalView {
+                    visible: term.id == root.active-tab-id;
+                    width: term.id == root.active-tab-id ? parent.width : 0px;
+                    height: term.id == root.active-tab-id ? parent.height : 0px;
+                    tab-id: term.id;
+                    status-line: term.status;
+                    spans: term.spans;
+                    cursor-row: term.cursor-row;
+                    cursor-col: term.cursor-col;
+                    rows-used: term.rows-used;
+                    is-alt-screen: term.is-alt-screen;
+                    find-matches: term.find-matches;
+                    selection: term.selection;
+                    sftp-panel-height <=> root.sftp-panel-height;
+                    sftp-path: term.sftp-path;
+                    sftp-entries: term.sftp-entries;
+                    sftp-status: term.sftp-status;
+                    sftp-loading: term.sftp-loading;
+                    sftp-tree-nodes: term.sftp-tree-nodes;
+                    send-key(key, ctrl, alt, shift) => { root.send-key(term.id, key, ctrl, alt, shift) }
+                    terminal-resize(w, h) => { root.terminal-resize(term.id, w, h) }
+                    sftp-navigate(path) => { root.sftp-navigate(term.id, path); }
+                    sftp-download(path) => { root.sftp-download(term.id, path); }
+                    sftp-upload-clicked(dir) => { root.sftp-upload-clicked(term.id, dir); }
+                    sftp-refresh(path) => { root.sftp-refresh(term.id, path); }
+                    sftp-tree-expand(path) => { root.sftp-tree-expand(term.id, path); }
+                    sftp-delete(path) => { root.sftp-delete(term.id, path); }
+                    sftp-view(path) => { root.sftp-view(term.id, path); }
+                    sftp-edit(path) => { root.sftp-edit(term.id, path); }
+                    paste-from-clipboard() => { root.paste-from-clipboard(term.id); }
+                    copy-terminal-text() => { root.copy-terminal-text(term.id); }
+                    clear-terminal() => { root.clear-terminal(term.id); }
+                    find-query-changed(q) => { root.find-query-changed(term.id, q); }
+                    terminal-scroll(d) => { root.terminal-scroll(term.id, d); }
+                    select-start(r, c) => { root.term-select-start(term.id, r, c); }
+                    select-update(r, c) => { root.term-select-update(term.id, r, c); }
+                    select-end() => { root.term-select-end(term.id); }
+                    select-autoscroll(dir) => { root.term-select-autoscroll(term.id, dir); }
+                }
+            }
+        }
+    }
+
+    // --- Top-right buttons: [下载] [设置] (设置 on the far right) ----------
+    // Settings (gear) — far right.
+    Rectangle {
+        x: root.width - 34px;
+        y: 8px;
+        width: 26px;
+        height: 26px;
+        border-radius: Theme.radius-sm;
+        background: gear-ta.has-hover || root.settings-open ? Theme.bg-hover : transparent;
+        gear-ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.settings-open = !root.settings-open;
+                root.download-open = false;
+            }
+        }
         Text {
-            text: "meatshell";
-            color: Theme.text-primary;
-            font-size: Theme.fs-xl;
+            text: "\u{E8B8}";              // Material Icons settings (gear)
+            font-family: "Material Icons";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-md;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
+    }
+    // Download manager — left of settings.
+    Rectangle {
+        x: root.width - 64px;
+        y: 8px;
+        width: 26px;
+        height: 26px;
+        border-radius: Theme.radius-sm;
+        background: dl-ta.has-hover || root.download-open ? Theme.bg-hover : transparent;
+        dl-ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.download-open = !root.download-open;
+                root.settings-open = false;
+            }
+        }
+        Text {
+            text: "\u{E2C4}";              // Material Icons file_download
+            font-family: "Material Icons";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-md;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // --- Download manager popup -------------------------------------------
+    // Always present; toggled via `visible` (avoids destroying interactive
+    // elements mid-event, which crashes when created/removed at the Window root).
+    Rectangle {
+        x: parent.width - 364px;
+        y: 40px;
+        width: 350px;
+        height: 400px;
+        visible: root.download-open;
+        background: Theme.bg-panel;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: #00000070;
+
+        // Swallow pointer events so right-clicks don't fall through to the
+        // terminal's context menu underneath.
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                Text {
+                    text: @tr("Download settings");
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-md;
+                    font-weight: 600;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 20px; height: 20px;
+                    border-radius: Theme.radius-sm;
+                    background: close-ta.has-hover ? Theme.bg-hover : transparent;
+                    close-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.download-open = false; }
+                    }
+                    Text { text: "\u{E5CD}"; font-family: "Material Icons";
+                           color: Theme.text-secondary; font-size: Theme.fs-sm;
+                           horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+                Text {
+                    text: @tr("Save downloads to:");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                }
+
+                // Current path display
+                Rectangle {
+                    height: 26px;
+                    background: Theme.bg-root;
+                    border-radius: Theme.radius-sm;
+                    Text {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: parent.height;
+                        text: root.download-dir == "" ? @tr("(ask every time)") : root.download-dir;
+                        color: root.download-dir == "" ? Theme.text-muted : Theme.text-primary;
+                        font-size: Theme.fs-sm;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    Rectangle {
+                        width: 96px; height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: pick-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                        pick-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.pick-download-dir(); }
+                        }
+                        Text { text: @tr("Choose folder"); color: #ffffff; font-size: Theme.fs-sm;
+                               horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                    Rectangle {
+                        width: 76px; height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: open-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
+                        open-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open-download-dir(); }
+                        }
+                        Text { text: @tr("Open folder"); color: Theme.text-primary; font-size: Theme.fs-sm;
+                               horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                // Transfer records (download/upload progress + history).
+                HorizontalLayout {
+                    Text {
+                        text: @tr("Transfers");
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-sm;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 44px; height: 20px;
+                        border-radius: Theme.radius-sm;
+                        background: clr-ta.has-hover ? Theme.bg-hover : transparent;
+                        clr-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.clear-transfers(); }
+                        }
+                        Text { text: @tr("Clear"); color: Theme.text-muted; font-size: Theme.fs-xs;
+                               horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+
+                Flickable {
+                    vertical-stretch: 1;
+                    viewport-width: self.width;
+                    viewport-height: max(self.height, xfer-col.preferred-height);
+                    xfer-col := VerticalLayout {
+                        alignment: start;
+                        spacing: 4px;
+
+                        if root.transfers.length == 0 : Text {
+                            text: @tr("No transfers yet");
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-xs;
+                        }
+
+                        for t in root.transfers : Rectangle {
+                            height: 36px;
+                            border-radius: Theme.radius-sm;
+                            background: Theme.bg-root;
+                            VerticalLayout {
+                                padding-left: 8px; padding-right: 8px;
+                                padding-top: 4px; padding-bottom: 4px;
+                                spacing: 3px;
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: (t.is-upload ? "↑ " : "↓ ") + t.name;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-xs;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: t.detail;
+                                        color: t.state == 2 ? Theme.danger
+                                             : t.state == 1 ? Theme.success
+                                             : Theme.text-muted;
+                                        font-size: Theme.fs-xs;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                // progress bar
+                                Rectangle {
+                                    height: 4px;
+                                    border-radius: 2px;
+                                    background: Theme.bg-elevated;
+                                    Rectangle {
+                                        x: 0; y: 0; height: parent.height;
+                                        width: parent.width * clamp(t.percent, 0.0, 1.0);
+                                        border-radius: 2px;
+                                        background: t.state == 2 ? Theme.danger
+                                                  : t.state == 1 ? Theme.success
+                                                  : Theme.accent;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    // --- Settings menu popup (top-right) ----------------------------------
+    Rectangle {
+        x: parent.width - 196px;
+        y: 40px;
+        width: 198px;
+        height: 104px;
+        visible: root.settings-open;
+        background: Theme.bg-panel;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 14px;
+        drop-shadow-color: #00000060;
+
+        TouchArea {}   // swallow events so they don't reach the terminal
+
+        VerticalLayout {
+            padding: 4px;
+            spacing: 1px;
+            // Import hosts from ~/.ssh/config.
+            Rectangle {
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: import-ta.has-hover ? Theme.bg-hover : transparent;
+                import-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.settings-open = false;
+                        root.import-ssh-config();
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 8px; spacing: 8px;
+                    Text { text: "\u{E890}"; font-family: "Material Icons"; // input/import
+                           color: Theme.text-secondary; font-size: Theme.fs-sm;
+                           vertical-alignment: center; }
+                    Text { text: @tr("Import ~/.ssh/config"); color: Theme.text-primary; font-size: Theme.fs-md;
+                           vertical-alignment: center; horizontal-stretch: 1; }
+                }
+            }
+            // Language toggle: shows the language you'll switch TO.
+            Rectangle {
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: lang-ta.has-hover ? Theme.bg-hover : transparent;
+                lang-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.settings-open = false;
+                        root.set-language(root.lang-en ? "zh" : "en");
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 8px; spacing: 8px;
+                    Text { text: "\u{E894}"; font-family: "Material Icons"; // language/translate
+                           color: Theme.text-secondary; font-size: Theme.fs-sm;
+                           vertical-alignment: center; }
+                    Text { text: root.lang-en ? "切换到中文" : "Switch to English";
+                           color: Theme.text-primary; font-size: Theme.fs-md;
+                           vertical-alignment: center; horizontal-stretch: 1; }
+                }
+            }
+            Rectangle {
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: about-ta.has-hover ? Theme.bg-hover : transparent;
+                about-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.settings-open = false;
+                        root.about-open = true;
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 8px; spacing: 8px;
+                    Text { text: "\u{E88E}"; font-family: "Material Icons"; // Info
+                           color: Theme.text-secondary; font-size: Theme.fs-sm;
+                           vertical-alignment: center; }
+                    Text { text: @tr("About"); color: Theme.text-primary; font-size: Theme.fs-md;
+                           vertical-alignment: center; horizontal-stretch: 1; }
+                }
+            }
+        }
+    }
+
+    // --- About dialog (centered on the window, with dim backdrop) ---------
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        visible: root.about-open;
+        background: #00000080;            // dim backdrop
+        TouchArea { clicked => { root.about-open = false; } }
+
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 380px;
+            height: 440px;
+            background: Theme.bg-panel;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #000000a0;
+
+            // Swallow clicks so the backdrop doesn't close when clicking inside.
+            TouchArea {}
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    Text {
+                        text: @tr("About meatshell");
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-lg;
+                        font-weight: 700;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 22px; height: 22px;
+                        border-radius: Theme.radius-sm;
+                        background: ab-close-ta.has-hover ? Theme.bg-hover : transparent;
+                        ab-close-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.about-open = false; }
+                        }
+                        Text { text: "\u{E5CD}"; font-family: "Material Icons";
+                               color: Theme.text-secondary; font-size: Theme.fs-sm;
+                               horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+
+                Text {
+                    text: @tr("A lightweight Rust + Slint SSH terminal client by 'lil meatball'.");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: @tr("Open source · MIT / Apache-2.0");
+                    color: Theme.text-muted;
+                    font-size: Theme.fs-xs;
+                }
+
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                Text {
+                    text: @tr("Open-source libraries used");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                }
+
+                Flickable {
+                    vertical-stretch: 1;
+                    viewport-width: self.width;
+                    viewport-height: max(self.height, libs-col.preferred-height);
+                    libs-col := VerticalLayout {
+                        alignment: start;
+                        spacing: 4px;
+                        for lib in root.about-libs : Text {
+                            text: lib;
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-xs;
+                            wrap: no-wrap;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Modal dialog -----------------------------------------------------
+    SessionDialog {
+        width: parent.width;
+        height: parent.height;
+        is-open <=> root.dialog-open;
+        is-editing <=> root.dialog-editing;
+        draft-id <=> root.dialog-id;
+        draft-name <=> root.dialog-name;
+        draft-host <=> root.dialog-host;
+        draft-port <=> root.dialog-port;
+        draft-user <=> root.dialog-user;
+        draft-auth <=> root.dialog-auth;
+        draft-password <=> root.dialog-password;
+        draft-key-path <=> root.dialog-key-path;
+        submit(draft) => { root.session-dialog-submit(draft); }
+        cancel => { root.session-dialog-cancel(); }
+        pick-key-file => { root.session-dialog-pick-key(); }
     }
 }

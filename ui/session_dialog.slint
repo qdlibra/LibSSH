@@ -1,0 +1,245 @@
+import { Theme } from "theme.slint";
+import { LabeledInput, PrimaryButton, GhostButton } from "widgets.slint";
+
+export struct SessionDraft {
+    id: string,
+    name: string,
+    host: string,
+    port: int,
+    user: string,
+    auth: string,      // "password" | "key"
+    password: string,
+    private-key-path: string,
+}
+
+// Modal dialog for creating / editing an SSH session.
+// The dialog is purely presentational — it stores values in mutable
+// properties and emits `submit` / `cancel` callbacks up to the main window.
+export component SessionDialog inherits Rectangle {
+    in-out property <bool> is-open: false;
+    in-out property <bool> is-editing: false;
+    in-out property <string> draft-id;
+    in-out property <string> draft-name;
+    in-out property <string> draft-host;
+    in-out property <string> draft-port: "22";
+    in-out property <string> draft-user: "root";
+    in-out property <string> draft-auth: "password";
+    in-out property <string> draft-password;
+    in-out property <string> draft-key-path;
+
+    callback submit(SessionDraft);
+    callback cancel();
+    callback pick-key-file();   // open a native file picker for the private key
+
+    visible: is-open;
+    background: #000000aa;
+
+    // Swallow clicks on the backdrop
+    TouchArea {
+        width: 100%; height: 100%;
+        clicked => { root.cancel(); }
+    }
+
+    Rectangle {
+        width: 420px;
+        height: 460px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.bg-panel;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000080;
+
+        // Prevent backdrop click from propagating when user clicks inside the card
+        TouchArea {
+            width: 100%; height: 100%;
+        }
+
+        VerticalLayout {
+            padding: 20px;
+            spacing: 14px;
+
+            Text {
+                text: is-editing ? @tr("Edit session") : @tr("New session");
+                color: Theme.text-primary;
+                font-size: Theme.fs-xl;
+                font-weight: 600;
+            }
+
+            LabeledInput {
+                label: @tr("Name");
+                placeholder: @tr("e.g. production web-01");
+                value <=> root.draft-name;
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                LabeledInput {
+                    label: @tr("Host / IP");
+                    placeholder: "192.168.1.10";
+                    value <=> root.draft-host;
+                    horizontal-stretch: 2;
+                }
+                LabeledInput {
+                    label: @tr("Port");
+                    placeholder: "22";
+                    value <=> root.draft-port;
+                    horizontal-stretch: 1;
+                }
+            }
+
+            LabeledInput {
+                label: @tr("Username");
+                placeholder: "root";
+                value <=> root.draft-user;
+            }
+
+            // Auth method toggle
+            VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: @tr("Authentication");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Rectangle {
+                        height: 30px;
+                        horizontal-stretch: 1;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        background: root.draft-auth == "password" ? Theme.accent : Theme.bg-root;
+                        border-color: root.draft-auth == "password" ? Theme.accent : Theme.border-subtle;
+                        Text {
+                            text: @tr("Password");
+                            color: root.draft-auth == "password" ? white : Theme.text-primary;
+                            font-size: Theme.fs-md;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.draft-auth = "password"; }
+                        }
+                    }
+                    Rectangle {
+                        height: 30px;
+                        horizontal-stretch: 1;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        background: root.draft-auth == "key" ? Theme.accent : Theme.bg-root;
+                        border-color: root.draft-auth == "key" ? Theme.accent : Theme.border-subtle;
+                        Text {
+                            text: @tr("Private key");
+                            color: root.draft-auth == "key" ? white : Theme.text-primary;
+                            font-size: Theme.fs-md;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.draft-auth = "key"; }
+                        }
+                    }
+                }
+            }
+
+            if root.draft-auth == "password" : LabeledInput {
+                label: @tr("Password");
+                placeholder: root.is-editing ? @tr("Leave blank to keep the current password") : "••••••••";
+                password: true;
+                value <=> root.draft-password;
+            }
+
+            if root.draft-auth == "key" : VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: @tr("Private key file");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        height: 32px;
+                        horizontal-stretch: 1;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: keyin.has-focus ? Theme.accent : Theme.border-subtle;
+                        background: Theme.bg-root;
+                        keyin := TextInput {
+                            x: 10px; y: 0px;
+                            width: parent.width - 20px;
+                            height: parent.height;
+                            text <=> root.draft-key-path;
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-md;
+                            vertical-alignment: center;
+                            single-line: true;
+                        }
+                        if root.draft-key-path == "" : Text {
+                            x: 10px; y: 0px;
+                            height: parent.height;
+                            text: "/home/you/.ssh/id_ed25519";
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-md;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        width: 64px; height: 32px;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        background: browse-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
+                        Text {
+                            text: @tr("Browse…");
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-sm;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        browse-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.pick-key-file(); }
+                        }
+                    }
+                }
+                Text {
+                    text: @tr("Pick the private key itself (not the .pub public key)");
+                    color: Theme.text-muted;
+                    font-size: Theme.fs-xs;
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                GhostButton {
+                    text: @tr("Cancel");
+                    clicked => { root.cancel(); }
+                }
+                PrimaryButton {
+                    text: is-editing ? @tr("Save") : @tr("Create");
+                    clicked => {
+                        root.submit({
+                            id: root.draft-id,
+                            name: root.draft-name,
+                            host: root.draft-host,
+                            port: root.draft-port.to-float(),
+                            user: root.draft-user,
+                            auth: root.draft-auth,
+                            password: root.draft-password,
+                            private-key-path: root.draft-key-path,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,255 @@
+import { Theme } from "theme.slint";
+import { IconButton, PrimaryButton, GhostButton } from "widgets.slint";
+
+export struct SessionInfo {
+    id: string,
+    name: string,
+    host: string,
+    port: int,
+    user: string,
+    auth: string,      // "password" | "key"
+    last-used: string, // ISO timestamp or "never"
+}
+
+// --- SessionRow ------------------------------------------------------------
+component SessionRow inherits Rectangle {
+    in property <SessionInfo> session;
+    callback connect();
+    callback edit();
+    callback remove();
+
+    height: 36px;
+    border-radius: Theme.radius-sm;
+    background: touch.has-hover ? Theme.bg-hover : transparent;
+    animate background { duration: 120ms; }
+
+    // Remember where the right-click landed so the popup can appear there.
+    property <length> ctx-x;
+    property <length> ctx-y;
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.connect(); }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                ctx-x = self.mouse-x;
+                ctx-y = self.mouse-y;
+                ctx-menu.show();
+            }
+        }
+    }
+
+    // Right-click context menu -----------------------------------------------
+    ctx-menu := PopupWindow {
+        x: ctx-x;
+        y: ctx-y;
+        width: 120px;
+        height: 72px;
+
+        Rectangle {
+            background: Theme.bg-panel;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 10px;
+            drop-shadow-color: #00000050;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+
+                // Edit
+                Rectangle {
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: edit-ta.has-hover ? Theme.bg-hover : transparent;
+                    edit-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.edit(); }
+                    }
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        spacing: 8px;
+                        alignment: center;
+                        Text { text: "\u{E3C9}"; font-family: "Material Icons"; color: Theme.text-secondary; font-size: Theme.fs-sm; vertical-alignment: center; }
+                        Text { text: @tr("Edit"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
+                    }
+                }
+
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                // Delete (red tint)
+                Rectangle {
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: del-ta.has-hover ? #cc333320 : transparent;
+                    del-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.remove(); }
+                    }
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        spacing: 8px;
+                        alignment: center;
+                        Text { text: "\u{E872}"; font-family: "Material Icons"; color: #cc3333; font-size: Theme.fs-sm; vertical-alignment: center; }
+                        Text { text: @tr("Delete"); color: #cc3333; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
+                    }
+                }
+            }
+        }
+    }
+
+    // Row content ------------------------------------------------------------
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 12px;
+
+        Rectangle {
+            width: 18px; height: 18px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 3px;
+            background: Theme.bg-elevated;
+            Text {
+                text: "\u{E875}";   // Material Icons "dns" — server/host glyph
+                font-family: "Material Icons";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-sm;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: session.name;
+            color: Theme.text-primary;
+            font-size: Theme.fs-md;
+            vertical-alignment: center;
+            width: 180px;
+            overflow: elide;
+        }
+        Text {
+            text: session.host + ":" + session.port;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+            width: 180px;
+            overflow: elide;
+        }
+        Text {
+            text: session.user;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+// --- Welcome ---------------------------------------------------------------
+export component Welcome inherits Rectangle {
+    in property <[SessionInfo]> sessions;
+    in property <string> import-hint;        // result text after an import
+    callback new-session();
+    callback import-ssh-config();
+    callback connect-session(string);
+    callback edit-session(string);
+    callback remove-session(string);
+
+    background: Theme.bg-root;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 20px;
+
+        VerticalLayout {
+            spacing: 4px;
+            Text {
+                text: "meatshell";
+                color: Theme.text-primary;
+                font-size: 28px;
+                font-weight: 700;
+            }
+            Text {
+                text: @tr("meatshell — a lightweight Rust + Slint SSH client by 'lil meatball'");
+                color: Theme.text-secondary;
+                font-size: Theme.fs-md;
+            }
+        }
+
+        // Quick Connect card
+        Rectangle {
+            background: Theme.bg-panel;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: @tr("Quick connect");
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-lg;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    // Result of the last "Import ~/.ssh/config" (triggered from
+                    // the settings menu), e.g. "imported 3".
+                    Text {
+                        text: root.import-hint;
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-sm;
+                        vertical-alignment: center;
+                    }
+                    PrimaryButton {
+                        text: @tr("+ New session");
+                        clicked => { root.new-session(); }
+                    }
+                }
+
+                if sessions.length == 0 : Rectangle {
+                    height: 120px;
+                    background: Theme.bg-root;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        Text {
+                            text: @tr("No sessions yet");
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-md;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: @tr("Use 'New session' (top-right) to add your first server");
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-sm;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                if sessions.length > 0 : VerticalLayout {
+                    spacing: 2px;
+                    for session[i] in sessions : SessionRow {
+                        session: session;
+                        connect => { root.connect-session(session.id); }
+                        edit => { root.edit-session(session.id); }
+                        remove => { root.remove-session(session.id); }
+                    }
+                }
+            }
+        }
+
+        // Filler
+        Rectangle { vertical-stretch: 1; }
+    }
+}

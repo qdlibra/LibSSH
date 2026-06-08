@@ -1,0 +1,100 @@
+import { Theme } from "theme.slint";
+import { IconButton } from "widgets.slint";
+
+export struct TabInfo {
+    id: string,
+    title: string,
+    kind: string,   // "welcome" | "terminal"
+    connected: bool,
+}
+
+// --- SingleTab -------------------------------------------------------------
+component SingleTab inherits Rectangle {
+    in property <TabInfo> info;
+    in property <bool> active;
+    callback selected();
+    callback closed();
+
+    height: 30px;
+    min-width: 100px;          // 缩短：原 120px，短名称（如 "pve"）时更紧凑
+    max-width: 160px;          // 新增：防止长名称把 tab 撑得过宽
+    horizontal-stretch: 0;    // 新增：不参与 TabBar 的等分拉伸，保持自然宽度
+    border-radius: Theme.radius-sm;
+    background: active ? Theme.bg-panel
+        : (touch.has-hover ? Theme.bg-hover : transparent);
+    animate background { duration: 120ms; }
+
+    // Declared FIRST so the HorizontalLayout's children (close button) are at
+    // a higher z-order and receive their own click events.
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.selected(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 6px;
+        spacing: 8px;
+        alignment: start;
+
+        // Status indicator
+        Rectangle {
+            width: 8px; height: 8px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 4px;
+            background: info.kind == "welcome" ? Theme.text-muted
+                : (info.connected ? Theme.success : Theme.warning);
+        }
+
+        Text {
+            text: info.title;
+            color: active ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        // Only show close button for non-welcome tabs
+        if info.kind != "welcome" : IconButton {
+            glyph: "×";
+            size: 20px;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.closed(); }
+        }
+    }
+}
+
+// --- TabBar ----------------------------------------------------------------
+export component TabBar inherits Rectangle {
+    in property <[TabInfo]> tabs;
+    in property <string> active-id;
+    callback tab-selected(string);
+    callback tab-closed(string);
+    callback new-tab();
+
+    height: 36px;
+    background: Theme.bg-panel-alt;
+
+    HorizontalLayout {
+        padding: 3px;
+        spacing: 2px;
+
+        for tab[i] in tabs : SingleTab {
+            info: tab;
+            active: tab.id == root.active-id;
+            selected => { root.tab-selected(tab.id); }
+            closed => { root.tab-closed(tab.id); }
+        }
+
+        IconButton {
+            glyph: "+";
+            size: 28px;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.new-tab(); }
+        }
+
+        // Spacer
+        Rectangle { horizontal-stretch: 1; }
+    }
+}
