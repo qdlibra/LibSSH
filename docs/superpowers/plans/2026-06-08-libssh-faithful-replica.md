@@ -139,11 +139,11 @@ Expected: one milestone commit.
 - Modify: `src/app.rs`
 - Modify: `ui/sidebar.slint`
 
-- [ ] Implement `SystemSnapshot`, `SystemSampler`, and formatting helpers.
-- [ ] Add 1 Hz Slint timer and model updates.
-- [ ] Keep bottom network graph local and warning/danger disk thresholds in Slint.
-- [ ] Run `cargo check` and `cargo run`.
-- [ ] Commit with `feat: add local resource sidebar`.
+- [x] Implement `SystemSnapshot`, `SystemSampler`, and formatting helpers.
+- [x] Add 1 Hz Slint timer and model updates.
+- [x] Keep bottom network graph local and warning/danger disk thresholds in Slint.
+- [x] Run `cargo check` and `cargo run`.
+- [x] Commit with `feat: add local resource sidebar`.
 
 ### Task 5: M5 SSH Connection And Terminal Rendering
 

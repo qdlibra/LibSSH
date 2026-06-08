@@ -3,9 +3,12 @@ slint::include_modules!();
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::config::{AuthMethod, ConfigStore, Secret, Session};
+use crate::system::{format_bytes_per_sec, SystemSampler, SystemSnapshot};
+
+const NET_HISTORY_LEN: usize = 60;
 
 pub fn run() -> anyhow::Result<()> {
     let store = Rc::new(RefCell::new(ConfigStore::load()?));
@@ -17,6 +20,7 @@ pub fn run() -> anyhow::Result<()> {
 
     let sessions_model = initialise_models(&window, &store.borrow());
     wire_callbacks(&window, store, sessions_model);
+    start_local_sampler(&window);
 
     window.run()?;
     Ok(())
@@ -69,6 +73,101 @@ fn initialise_models(window: &AppWindow, store: &ConfigStore) -> Rc<VecModel<Ses
     window.set_net_show_selector(false);
     window.set_download_dir(store.download_dir().into());
     sessions_model
+}
+
+fn start_local_sampler(window: &AppWindow) {
+    let sampler = Rc::new(RefCell::new(SystemSampler::new()));
+    let net_hist = Rc::new(RefCell::new(vec![0.0; NET_HISTORY_LEN]));
+
+    {
+        let snap = sampler.borrow_mut().sample();
+        push_ring(&mut net_hist.borrow_mut(), snap.net_bytes_per_sec as f32);
+        apply_local_snapshot(window, &snap, &net_hist.borrow());
+    }
+
+    let weak = window.as_weak();
+    let tick_sampler = sampler.clone();
+    let tick_hist = net_hist.clone();
+    let timer = Timer::default();
+    timer.start(TimerMode::Repeated, SystemSampler::recommended_interval(), move || {
+        let snap = tick_sampler.borrow_mut().sample();
+        {
+            let mut hist = tick_hist.borrow_mut();
+            push_ring(&mut hist, snap.net_bytes_per_sec as f32);
+        }
+        if let Some(w) = weak.upgrade() {
+            apply_local_snapshot(&w, &snap, &tick_hist.borrow());
+        }
+    });
+    Box::leak(Box::new(timer));
+}
+
+fn apply_local_snapshot(window: &AppWindow, snap: &SystemSnapshot, net_hist: &[f32]) {
+    window.set_connection_state(crate::i18n::t("未连接", "Not connected").into());
+    window.set_resource_title(crate::i18n::t("本机资源", "Local resources").into());
+    window.set_conn_state(0);
+    window.set_cpu_percent(snap.cpu_percent);
+    window.set_mem_percent(snap.mem_percent);
+    window.set_swap_percent(snap.swap_percent);
+    window.set_mem_detail(format!("{}M/{}M", snap.mem_used_mib, snap.mem_total_mib).into());
+    window.set_swap_detail(format!("{}M/{}M", snap.swap_used_mib, snap.swap_total_mib).into());
+
+    window.set_net_top_up(format_bytes_per_sec(snap.net_tx_per_sec).into());
+    window.set_net_top_down(format_bytes_per_sec(snap.net_rx_per_sec).into());
+    window.set_net_bot_up(format_bytes_per_sec(snap.net_tx_per_sec).into());
+    window.set_net_bot_down(format_bytes_per_sec(snap.net_rx_per_sec).into());
+    let hist = normalized_model(net_hist);
+    window.set_net_top_history(hist.clone());
+    window.set_net_bot_history(hist);
+    window.set_net_ifaces(empty_model::<SharedString>());
+    window.set_net_selected("".into());
+    window.set_net_show_selector(false);
+    window.set_disks(disk_model(&snap.disks));
+}
+
+fn push_ring(values: &mut Vec<f32>, value: f32) {
+    values.push(value);
+    if values.len() > NET_HISTORY_LEN {
+        values.remove(0);
+    }
+}
+
+fn normalized_model(values: &[f32]) -> ModelRc<f32> {
+    let peak = values.iter().copied().fold(0.0_f32, f32::max).max(1.0);
+    let rows: Vec<f32> = values.iter().map(|v| (v / peak).clamp(0.0, 1.0)).collect();
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
+fn disk_model(disks: &[(String, u64, u64)]) -> ModelRc<DiskInfo> {
+    let rows: Vec<DiskInfo> = disks
+        .iter()
+        .map(|(mount, avail, total)| {
+            let used = total.saturating_sub(*avail);
+            let percent = if *total > 0 {
+                used as f32 / *total as f32
+            } else {
+                0.0
+            };
+            DiskInfo {
+                path: mount.clone().into(),
+                detail: format!("{}/{}", format_size(*avail), format_size(*total)).into(),
+                percent,
+            }
+        })
+        .collect();
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes < 1_024 {
+        format!("{} B", bytes)
+    } else if bytes < 1_024 * 1_024 {
+        format!("{:.1} KB", bytes as f64 / 1_024.0)
+    } else if bytes < 1_024 * 1_024 * 1_024 {
+        format!("{:.1} MB", bytes as f64 / (1_024.0 * 1_024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1_024.0 * 1_024.0 * 1_024.0))
+    }
 }
 
 fn empty_model<T: 'static + Clone + Default>() -> ModelRc<T> {
