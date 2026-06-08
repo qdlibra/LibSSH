@@ -1,3 +1,6 @@
 /target/
+/dist/
+**/__pycache__/
 **/*.rs.bk
+*.py[cod]
 .DS_Store

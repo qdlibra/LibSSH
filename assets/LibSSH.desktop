@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=LibSSH
+Comment=Lightweight Rust + Slint SSH terminal client
+Exec=LibSSH
+Icon=LibSSH
+Terminal=false
+Categories=Network;RemoteAccess;TerminalEmulator;
+StartupNotify=true
+StartupWMClass=LibSSH

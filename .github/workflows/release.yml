@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+          - name: macos
+            os: macos-latest
+          - name: windows-x86_64
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfontconfig1-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Build release
+        run: cargo +stable build --release --locked
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "dist/LibSSH-${{ matrix.name }}"
+          cp target/release/LibSSH "dist/LibSSH-${{ matrix.name }}/"
+          cp assets/LibSSH.desktop assets/icon@512.png assets/install-linux.sh README.md "dist/LibSSH-${{ matrix.name }}/"
+          tar -czf "dist/LibSSH-${{ matrix.name }}.tar.gz" -C dist "LibSSH-${{ matrix.name }}"
+
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: |
+          chmod +x scripts/package-macos-aarch64-dmg.sh
+          scripts/package-macos-aarch64-dmg.sh target/release/LibSSH dist
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Compress-Archive -Path target\release\LibSSH.exe -DestinationPath dist\LibSSH-${{ matrix.name }}.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibSSH-${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mapfile -t files < <(find artifacts -type f)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --generate-notes --title "$TAG"
+          fi
