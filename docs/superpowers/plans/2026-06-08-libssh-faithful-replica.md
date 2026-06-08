@@ -176,11 +176,11 @@ Expected: one milestone commit.
 - Modify: `src/app.rs`
 - Modify: `ui/sidebar.slint`
 
-- [ ] Inject and parse Linux `/proc` and `df -kP` sampling script.
-- [ ] Emit and consume `SessionEvent::ResourceStats`.
-- [ ] Make active connected tabs show remote resources while welcome and disconnected tabs fall back as documented.
-- [ ] Run `cargo check`; manually verify on a Linux SSH host.
-- [ ] Commit with `feat: add remote resource sampling`.
+- [x] Inject and parse Linux `/proc` and `df -kP` sampling script.
+- [x] Emit and consume `SessionEvent::ResourceStats`.
+- [x] Make active connected tabs show remote resources while welcome and disconnected tabs fall back as documented.
+- [x] Run `cargo check`; manually verify on a Linux SSH host. Current environment has no reachable Linux SSH host configured, so manual remote sampling is not verified.
+- [x] Commit with `feat: add remote resource sampling`.
 
 ### Task 8: M8 SFTP File Management
 

@@ -643,4 +643,31 @@ mod tests {
         assert_eq!(swap_used_kib, 10);
         assert_eq!(disks, vec![("/".to_string(), 80 * 1024, 100 * 1024)]);
     }
+
+    #[test]
+    fn parses_monitor_block_deltas_and_sorts_network() {
+        let mut prev = Some((100, 80));
+        let mut prev_net = std::collections::HashMap::from([
+            ("eth0".to_string(), (1_000, 2_000)),
+            ("wlan0".to_string(), (10_000, 20_000)),
+        ]);
+        let mut prev_net_at = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        let block = "cpu  30 0 20 90 0\nMemTotal: 2000 kB\nMemAvailable: 1000 kB\nSwapTotal: 100 kB\nSwapFree: 25 kB\n  lo: 999 0 0 0 0 0 0 0 999 0 0 0 0 0 0 0\n  eth0: 3000 0 0 0 0 0 0 0 6000 0 0 0 0 0 0 0\n  wlan0: 13000 0 0 0 0 0 0 0 21000 0 0 0 0 0 0 0\n__DF__\nFilesystem 1024-blocks Used Available Capacity Mounted on\n/dev/x 100 20 80 20% /\n";
+        let Some(SessionEvent::ResourceStats {
+            cpu_percent,
+            mem_used_kib,
+            swap_used_kib,
+            net,
+            ..
+        }) = parse_monitor_block(block, &mut prev, &mut prev_net, &mut prev_net_at)
+        else {
+            panic!("expected stats");
+        };
+        assert!((cpu_percent - 0.75).abs() < 0.01);
+        assert_eq!(mem_used_kib, 1000);
+        assert_eq!(swap_used_kib, 75);
+        assert_eq!(net.len(), 2);
+        assert_eq!(net[0].0, "eth0");
+        assert_eq!(net[1].0, "wlan0");
+    }
 }
