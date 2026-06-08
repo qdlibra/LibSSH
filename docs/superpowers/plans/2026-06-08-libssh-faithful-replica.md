@@ -205,10 +205,10 @@ Expected: one milestone commit.
 - Modify: `src/sftp.rs`
 - Modify: `src/config.rs`
 
-- [ ] Test and implement proxy URL parsing, environment fallback, SOCKS5 connect, and HTTP CONNECT with optional Basic auth.
-- [ ] Route SSH and SFTP through the resolved proxy.
-- [ ] Run proxy tests and `cargo check`; manually verify SOCKS5 and HTTP proxy paths if available.
-- [ ] Commit with `feat: add proxy support`.
+- [x] Test and implement proxy URL parsing, environment fallback, SOCKS5 connect, and HTTP CONNECT with optional Basic auth.
+- [x] Route SSH and SFTP through the resolved proxy.
+- [x] Run proxy tests and `cargo check`; manually verify SOCKS5 and HTTP proxy paths if available. Automated proxy parsing and local HTTP CONNECT tests pass; manual SOCKS5/HTTP proxy SSH flows are not verified because no reachable proxy/SSH target is configured.
+- [x] Commit with `feat: add proxy support`.
 
 ### Task 10: M10 Release And Platform Integration
 

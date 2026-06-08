@@ -250,9 +250,25 @@ async fn run_session(
     });
     let handler = ClientHandler {};
     let addr = format!("{}:{}", session.host, session.port);
-    let mut handle = client::connect(config, addr.as_str(), handler)
-        .await
-        .with_context(|| format!("connect {} failed", addr))?;
+    let mut handle = match crate::proxy::resolve(&session.proxy) {
+        Some(proxy) => {
+            let _ = events.send(SessionEvent::Status(format!(
+                "{} {} -> {}",
+                t("经代理连接", "via proxy"),
+                crate::proxy::describe(&proxy),
+                addr
+            )));
+            let stream = crate::proxy::connect(&proxy, &session.host, session.port)
+                .await
+                .with_context(|| format!("proxy connect to {} failed", addr))?;
+            client::connect_stream(config, stream, handler)
+                .await
+                .with_context(|| format!("connect {} failed", addr))?
+        }
+        None => client::connect(config, addr.as_str(), handler)
+            .await
+            .with_context(|| format!("connect {} failed", addr))?,
+    };
 
     let authed = match session.auth {
         AuthMethod::Password => handle
