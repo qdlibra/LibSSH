@@ -126,11 +126,11 @@ Expected: one milestone commit.
 - Modify: `src/config.rs`
 - Test: parser/config tests
 
-- [ ] Test and implement `~/.ssh/config` parsing for Host, HostName, User, Port, IdentityFile, `~/` expansion, wildcard skipping, and duplicate skipping.
-- [ ] Wire new/edit/delete/import callbacks in `app.rs`.
-- [ ] Preserve password edit semantics: never prefill password; blank edit keeps old password.
-- [ ] Run tests, `cargo check`, and manual UI CRUD.
-- [ ] Commit with `feat: add session management`.
+- [x] Test and implement `~/.ssh/config` parsing for Host, HostName, User, Port, IdentityFile, `~/` expansion, wildcard skipping, and duplicate skipping.
+- [x] Wire new/edit/delete/import callbacks in `app.rs`.
+- [x] Preserve password edit semantics: never prefill password; blank edit keeps old password.
+- [x] Run tests, `cargo check`, and manual UI CRUD.
+- [x] Commit with `feat: add session management`.
 
 ### Task 4: M4 Local Resource Sidebar
 

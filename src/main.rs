@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod i18n;
+mod ssh_config;
 
 use tracing_subscriber::EnvFilter;
 
