@@ -93,11 +93,11 @@ Expected: one milestone commit.
 - Modify: `lang/zh/LC_MESSAGES/meatshell.po`
 - Modify: `lang/en/LC_MESSAGES/meatshell.po`
 
-- [ ] Implement `Secret`, `AuthMethod`, `Session`, `ConfigFile`, and `ConfigStore` exactly from `04-DATA-MODEL.md` and `05-BACKEND-core.md`.
-- [ ] Add tests for config round trip, missing optional fields, broken JSON backup, and language defaults.
-- [ ] Implement `i18n` with default zh, `set_language`, `current_code`, `is_en`, `apply_to_slint`, and `t(zh, en)`.
-- [ ] Run `cargo test config i18n` and `cargo check`.
-- [ ] Commit with `feat: add config and i18n foundation`.
+- [x] Implement `Secret`, `AuthMethod`, `Session`, `ConfigFile`, and `ConfigStore` exactly from `04-DATA-MODEL.md` and `05-BACKEND-core.md`.
+- [x] Add tests for config round trip, missing optional fields, broken JSON backup, and language defaults.
+- [x] Implement `i18n` with default zh, `set_language`, `current_code`, `is_en`, `apply_to_slint`, and `t(zh, en)`.
+- [x] Run `cargo test config i18n` and `cargo check`.
+- [x] Commit with `feat: add config and i18n foundation`.
 
 ### Task 2: M2 Static UI Skeleton
 
