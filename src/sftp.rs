@@ -4,7 +4,6 @@
 //! cannot block the interactive shell PTY.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,19 +11,17 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use russh::client::{self, Handler};
-use russh::keys::key::PrivateKeyWithHashAlg;
-use russh::keys::load_secret_key;
 use russh::Disconnect;
 use russh_sftp::client::{RawSftpSession, SftpSession};
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
-use ssh_key::{HashAlg, PublicKey};
+use ssh_key::PublicKey;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::config::{AuthMethod, Session};
 use crate::i18n::t;
-use crate::ssh::{RemoteEntry, RemoteTreeNode, SessionEvent};
+use crate::ssh::{load_private_key_for_auth, RemoteEntry, RemoteTreeNode, SessionEvent};
 
 #[derive(Debug)]
 pub enum SftpCommand {
@@ -134,23 +131,7 @@ async fn run_sftp(
             .await
             .context("sftp password auth failed")?,
         AuthMethod::Key => {
-            let raw = session.private_key_path.trim();
-            if raw.is_empty() {
-                return Err(anyhow!(t("私钥路径为空", "private key path is empty")));
-            }
-            let normalised = raw.replace('\\', "/");
-            let key_path = normalised
-                .strip_suffix(".pub")
-                .map(str::to_string)
-                .unwrap_or(normalised);
-            let keypair = load_secret_key(Path::new(&key_path), None)
-                .with_context(|| format!("failed to load key {key_path}"))?;
-            let hash = if keypair.algorithm().is_rsa() {
-                Some(HashAlg::Sha256)
-            } else {
-                None
-            };
-            let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash)
+            let key_with_hash = load_private_key_for_auth(&session.private_key_path)
                 .context("invalid private key")?;
             handle
                 .authenticate_publickey(&session.user, key_with_hash)

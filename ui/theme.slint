@@ -1,29 +1,37 @@
+import { Palette } from "std-widgets.slint";
+
 // Central design tokens for LibSSH.
 // Keep these aligned with docs/UI guidelines.
 
 export global Theme {
+    // 0 = follow system, 1 = light, 2 = dark.
+    in-out property <int> mode: 0;
+    out property <bool> is-dark: mode == 2 ? true
+                               : mode == 1 ? false
+                               : Palette.color-scheme != ColorScheme.light;
+
     // --- Palette -----------------------------------------------------------
-    out property <brush> bg-root: #1b1d23;
-    out property <brush> bg-panel: #23262d;
-    out property <brush> bg-panel-alt: #2a2d35;
-    out property <brush> bg-elevated: #30333c;
-    out property <brush> bg-hover: #373a44;
-    out property <brush> bg-active: #3f4350;
+    out property <brush> bg-root: is-dark ? #1b1d23 : #f4f6f8;
+    out property <brush> bg-panel: is-dark ? #23262d : #ffffff;
+    out property <brush> bg-panel-alt: is-dark ? #2a2d35 : #edf1f5;
+    out property <brush> bg-elevated: is-dark ? #30333c : #e6ebf1;
+    out property <brush> bg-hover: is-dark ? #373a44 : #dde4ec;
+    out property <brush> bg-active: is-dark ? #3f4350 : #cfd9e4;
 
-    out property <brush> border-subtle: #3a3d46;
-    out property <brush> border-strong: #4a4e59;
+    out property <brush> border-subtle: is-dark ? #3a3d46 : #d4dbe4;
+    out property <brush> border-strong: is-dark ? #4a4e59 : #b9c4d0;
 
-    out property <brush> text-primary: #e6e8ee;
-    out property <brush> text-secondary: #a8adb8;
-    out property <brush> text-muted: #6b6f7a;
+    out property <brush> text-primary: is-dark ? #e6e8ee : #1f2733;
+    out property <brush> text-secondary: is-dark ? #a8adb8 : #526071;
+    out property <brush> text-muted: is-dark ? #6b6f7a : #8591a0;
 
-    out property <brush> accent: #4a90e2;
-    out property <brush> accent-hover: #5aa0f2;
-    out property <brush> accent-pressed: #3a80d2;
+    out property <brush> accent: is-dark ? #4a90e2 : #256ec1;
+    out property <brush> accent-hover: is-dark ? #5aa0f2 : #2f7ed6;
+    out property <brush> accent-pressed: is-dark ? #3a80d2 : #1f5fab;
 
-    out property <brush> success: #4ec9b0;
-    out property <brush> warning: #e2a84a;
-    out property <brush> danger: #e25c5c;
+    out property <brush> success: is-dark ? #4ec9b0 : #168c74;
+    out property <brush> warning: is-dark ? #e2a84a : #b26f00;
+    out property <brush> danger: is-dark ? #e25c5c : #c23a3a;
 
     out property <brush> term-bg: #0e0f13;
     out property <brush> term-fg: #d4d4d4;

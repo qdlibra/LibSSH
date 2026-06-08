@@ -296,6 +296,46 @@ fn refresh_sidebar(
     }
 }
 
+fn schedule_sidebar_refresh(
+    weak: slint::Weak<AppWindow>,
+    statuses: TabStatuses,
+    local_snap: LocalSnap,
+    local_net_hist: NetHist,
+) {
+    Timer::single_shot(std::time::Duration::from_millis(1), move || {
+        if let Some(w) = weak.upgrade() {
+            refresh_sidebar(&w, &statuses, &local_snap, &local_net_hist);
+        }
+    });
+}
+
+fn should_show_connection_failed_alert(previous_state: Option<u8>) -> bool {
+    matches!(previous_state, None | Some(0))
+}
+
+fn show_connection_failed_alert(win: &AppWindow, reason: &str) {
+    let title = crate::i18n::t("连接失败", "Connection failed");
+    let message = reason.trim();
+    let message = if message.is_empty() {
+        crate::i18n::t("无法连接到服务器，请检查主机、端口、认证方式或网络。", "Unable to connect to the server. Check the host, port, authentication method, or network.").to_string()
+    } else {
+        message.to_string()
+    };
+
+    win.set_alert_title(title.into());
+    win.set_alert_message(message.clone().into());
+    win.set_alert_open(true);
+
+    let weak = win.as_weak();
+    Timer::single_shot(std::time::Duration::from_secs(8), move || {
+        if let Some(w) = weak.upgrade() {
+            if w.get_alert_message().as_str() == message {
+                w.set_alert_open(false);
+            }
+        }
+    });
+}
+
 fn set_top_local(window: &AppWindow, snap: &SystemSnapshot, net_hist: &[f32]) {
     window.set_net_top_up(format_bytes_per_sec(snap.net_tx_per_sec).into());
     window.set_net_top_down(format_bytes_per_sec(snap.net_rx_per_sec).into());
@@ -403,10 +443,19 @@ fn wire_callbacks(
     let terminals_model = models.terminals.clone();
 
     let weak = window.as_weak();
+    let new_tab_statuses = tab_statuses.clone();
+    let new_tab_local = local_snap.clone();
+    let new_tab_hist = local_net_hist.clone();
     window.on_new_tab_clicked(move || {
         if let Some(w) = weak.upgrade() {
             w.set_active_tab_id("welcome".into());
         }
+        schedule_sidebar_refresh(
+            weak.clone(),
+            new_tab_statuses.clone(),
+            new_tab_local.clone(),
+            new_tab_hist.clone(),
+        );
     });
 
     let weak = window.as_weak();
@@ -622,166 +671,187 @@ fn wire_callbacks(
     let connect_last_size = last_term_size.clone();
     window.on_connect_session(move |id: SharedString| {
         let id = id.to_string();
-        let session = match connect_store.borrow().get(&id).cloned() {
-            Some(s) => s,
-            None => return,
-        };
-        let tab_id = format!("term-{}", uuid::Uuid::new_v4());
-        connect_statuses.lock().unwrap().insert(
-            tab_id.clone(),
-            TabStatus {
-                host: format!("{}@{}", session.user, session.host),
-                state: 0,
-                ..Default::default()
-            },
-        );
-        connect_tabs.push(TabInfo {
-            id: tab_id.clone().into(),
-            title: session.name.clone().into(),
-            kind: "terminal".into(),
-            connected: false,
-        });
-        connect_terminals.push(TerminalState {
-            id: tab_id.clone().into(),
-            status: crate::i18n::t("连接中...", "Connecting...").into(),
-            spans: empty_model::<TermSpan>(),
-            cursor_row: 0,
-            cursor_col: 0,
-            rows_used: 0,
-            is_alt_screen: false,
-            find_matches: empty_model::<TermMatch>(),
-            selection: empty_model::<TermMatch>(),
-            sftp_path: "/".into(),
-            sftp_entries: empty_model::<SftpEntry>(),
-            sftp_status: crate::i18n::t("SFTP 连接中...", "SFTP connecting...").into(),
-            sftp_loading: true,
-            sftp_tree_nodes: empty_model::<SftpTreeNode>(),
-        });
-        connect_bufs.lock().unwrap().insert(
-            tab_id.clone(),
-            TermBuffer {
-                parser: vt100::Parser::new(24, 80, 5000),
-                find_query: String::new(),
-                sel: None,
-                history: Vec::new(),
-                prev: Vec::new(),
-                view_offset: 0,
-                displayed_text: Vec::new(),
-                csi_state: CsiState::Normal,
-            },
-        );
-        connect_sftp_manual_nav
-            .lock()
-            .unwrap()
-            .insert(tab_id.clone(), false);
-        if let Some(w) = weak.upgrade() {
-            w.set_active_tab_id(tab_id.clone().into());
-            refresh_sidebar(&w, &connect_statuses, &connect_local, &connect_hist);
-        }
+        let weak = weak.clone();
+        let connect_store = connect_store.clone();
+        let connect_tabs = connect_tabs.clone();
+        let connect_terminals = connect_terminals.clone();
+        let connect_handles = connect_handles.clone();
+        let connect_sftp_handles = connect_sftp_handles.clone();
+        let connect_sftp_manual_nav = connect_sftp_manual_nav.clone();
+        let connect_bufs = connect_bufs.clone();
+        let connect_runtime = connect_runtime.clone();
+        let connect_statuses = connect_statuses.clone();
+        let connect_local = connect_local.clone();
+        let connect_hist = connect_hist.clone();
+        let connect_last_size = connect_last_size.clone();
 
-        let (initial_cols, initial_rows) = *connect_last_size.lock().unwrap();
-        let sftp_session = session.clone();
-        let (handle, mut rx) = spawn_session(
-            connect_runtime.handle(),
-            tab_id.clone(),
-            session,
-            initial_cols,
-            initial_rows,
-        );
-        connect_handles.borrow_mut().insert(tab_id.clone(), handle);
+        Timer::single_shot(std::time::Duration::from_millis(1), move || {
+            let session = match connect_store.borrow().get(&id).cloned() {
+                Some(s) => s,
+                None => return,
+            };
+            let tab_id = format!("term-{}", uuid::Uuid::new_v4());
+            connect_statuses.lock().unwrap().insert(
+                tab_id.clone(),
+                TabStatus {
+                    host: format!("{}@{}", session.user, session.host),
+                    state: 0,
+                    ..Default::default()
+                },
+            );
+            connect_tabs.push(TabInfo {
+                id: tab_id.clone().into(),
+                title: session.name.clone().into(),
+                kind: "terminal".into(),
+                connected: false,
+            });
+            connect_terminals.push(TerminalState {
+                id: tab_id.clone().into(),
+                status: crate::i18n::t("连接中...", "Connecting...").into(),
+                spans: empty_model::<TermSpan>(),
+                cursor_row: 0,
+                cursor_col: 0,
+                rows_used: 0,
+                is_alt_screen: false,
+                find_matches: empty_model::<TermMatch>(),
+                selection: empty_model::<TermMatch>(),
+                sftp_path: "/".into(),
+                sftp_entries: empty_model::<SftpEntry>(),
+                sftp_status: crate::i18n::t("SFTP 连接中...", "SFTP connecting...").into(),
+                sftp_loading: true,
+                sftp_tree_nodes: empty_model::<SftpTreeNode>(),
+            });
+            connect_bufs.lock().unwrap().insert(
+                tab_id.clone(),
+                TermBuffer {
+                    parser: vt100::Parser::new(24, 80, 5000),
+                    find_query: String::new(),
+                    sel: None,
+                    history: Vec::new(),
+                    prev: Vec::new(),
+                    view_offset: 0,
+                    displayed_text: Vec::new(),
+                    csi_state: CsiState::Normal,
+                },
+            );
+            connect_sftp_manual_nav
+                .lock()
+                .unwrap()
+                .insert(tab_id.clone(), false);
+            if let Some(w) = weak.upgrade() {
+                w.set_active_tab_id(tab_id.clone().into());
+            }
+            schedule_sidebar_refresh(
+                weak.clone(),
+                connect_statuses.clone(),
+                connect_local.clone(),
+                connect_hist.clone(),
+            );
 
-        let (sftp_tx, mut sftp_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
-        let sftp_handle = spawn_sftp(connect_runtime.handle(), sftp_session, sftp_tx);
-        connect_sftp_handles
-            .lock()
-            .unwrap()
-            .insert(tab_id.clone(), sftp_handle);
+            let (initial_cols, initial_rows) = *connect_last_size.lock().unwrap();
+            let sftp_session = session.clone();
+            let (handle, mut rx) = spawn_session(
+                connect_runtime.handle(),
+                tab_id.clone(),
+                session,
+                initial_cols,
+                initial_rows,
+            );
+            connect_handles.borrow_mut().insert(tab_id.clone(), handle);
 
-        let weak_events = weak.clone();
-        let bufs_events = connect_bufs.clone();
-        let statuses_events = connect_statuses.clone();
-        let local_events = connect_local.clone();
-        let hist_events = connect_hist.clone();
-        let sftp_handles_events = connect_sftp_handles.clone();
-        let sftp_manual_events = connect_sftp_manual_nav.clone();
-        let runtime_events = connect_runtime.clone();
-        let shell_tab_id = tab_id.clone();
-        std::thread::spawn(move || {
-            let mut cwd_debounce: Option<tokio::task::JoinHandle<()>> = None;
-            while let Some(event) = rx.blocking_recv() {
-                if let SessionEvent::CwdChanged(ref cwd) = event {
-                    let is_manual = sftp_manual_events
-                        .lock()
-                        .ok()
-                        .and_then(|m| m.get(&shell_tab_id).copied())
-                        .unwrap_or(false);
-                    if !is_manual {
-                        if let Some(prev) = cwd_debounce.take() {
-                            prev.abort();
-                        }
-                        let cwd = cwd.clone();
-                        let tid = shell_tab_id.clone();
-                        let sftp_handles = sftp_handles_events.clone();
-                        cwd_debounce = Some(runtime_events.spawn(async move {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            if let Ok(handles) = sftp_handles.lock() {
-                                if let Some(handle) = handles.get(&tid) {
-                                    handle.list_dir(cwd);
-                                }
+            let (sftp_tx, mut sftp_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
+            let sftp_handle = spawn_sftp(connect_runtime.handle(), sftp_session, sftp_tx);
+            connect_sftp_handles
+                .lock()
+                .unwrap()
+                .insert(tab_id.clone(), sftp_handle);
+
+            let weak_events = weak.clone();
+            let bufs_events = connect_bufs.clone();
+            let statuses_events = connect_statuses.clone();
+            let local_events = connect_local.clone();
+            let hist_events = connect_hist.clone();
+            let sftp_handles_events = connect_sftp_handles.clone();
+            let sftp_manual_events = connect_sftp_manual_nav.clone();
+            let runtime_events = connect_runtime.clone();
+            let shell_tab_id = tab_id.clone();
+            std::thread::spawn(move || {
+                let mut cwd_debounce: Option<tokio::task::JoinHandle<()>> = None;
+                while let Some(event) = rx.blocking_recv() {
+                    if let SessionEvent::CwdChanged(ref cwd) = event {
+                        let is_manual = sftp_manual_events
+                            .lock()
+                            .ok()
+                            .and_then(|m| m.get(&shell_tab_id).copied())
+                            .unwrap_or(false);
+                        if !is_manual {
+                            if let Some(prev) = cwd_debounce.take() {
+                                prev.abort();
                             }
-                        }));
+                            let cwd = cwd.clone();
+                            let tid = shell_tab_id.clone();
+                            let sftp_handles = sftp_handles_events.clone();
+                            cwd_debounce = Some(runtime_events.spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                if let Ok(handles) = sftp_handles.lock() {
+                                    if let Some(handle) = handles.get(&tid) {
+                                        handle.list_dir(cwd);
+                                    }
+                                }
+                            }));
+                        }
                     }
+                    let weak_evt = weak_events.clone();
+                    let tab_evt = shell_tab_id.clone();
+                    let bufs_evt = bufs_events.clone();
+                    let statuses_evt = statuses_events.clone();
+                    let local_evt = local_events.clone();
+                    let hist_evt = hist_events.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = weak_evt.upgrade() {
+                            apply_session_event_to_window(
+                                &w,
+                                &tab_evt,
+                                event,
+                                &bufs_evt,
+                                &statuses_evt,
+                                &local_evt,
+                                &hist_evt,
+                            );
+                        }
+                    });
                 }
-                let weak_evt = weak_events.clone();
-                let tab_evt = shell_tab_id.clone();
-                let bufs_evt = bufs_events.clone();
-                let statuses_evt = statuses_events.clone();
-                let local_evt = local_events.clone();
-                let hist_evt = hist_events.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(w) = weak_evt.upgrade() {
-                        apply_session_event_to_window(
-                            &w,
-                            &tab_evt,
-                            event,
-                            &bufs_evt,
-                            &statuses_evt,
-                            &local_evt,
-                            &hist_evt,
-                        );
-                    }
-                });
-            }
-        });
+            });
 
-        let weak_events = weak.clone();
-        let bufs_events = connect_bufs.clone();
-        let statuses_events = connect_statuses.clone();
-        let local_events = connect_local.clone();
-        let hist_events = connect_hist.clone();
-        let tab_events = tab_id.clone();
-        std::thread::spawn(move || {
-            while let Some(event) = sftp_rx.blocking_recv() {
-                let weak_evt = weak_events.clone();
-                let tab_evt = tab_events.clone();
-                let bufs_evt = bufs_events.clone();
-                let statuses_evt = statuses_events.clone();
-                let local_evt = local_events.clone();
-                let hist_evt = hist_events.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(w) = weak_evt.upgrade() {
-                        apply_session_event_to_window(
-                            &w,
-                            &tab_evt,
-                            event,
-                            &bufs_evt,
-                            &statuses_evt,
-                            &local_evt,
-                            &hist_evt,
-                        );
-                    }
-                });
-            }
+            let weak_events = weak.clone();
+            let bufs_events = connect_bufs.clone();
+            let statuses_events = connect_statuses.clone();
+            let local_events = connect_local.clone();
+            let hist_events = connect_hist.clone();
+            let tab_events = tab_id.clone();
+            std::thread::spawn(move || {
+                while let Some(event) = sftp_rx.blocking_recv() {
+                    let weak_evt = weak_events.clone();
+                    let tab_evt = tab_events.clone();
+                    let bufs_evt = bufs_events.clone();
+                    let statuses_evt = statuses_events.clone();
+                    let local_evt = local_events.clone();
+                    let hist_evt = hist_events.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = weak_evt.upgrade() {
+                            apply_session_event_to_window(
+                                &w,
+                                &tab_evt,
+                                event,
+                                &bufs_evt,
+                                &statuses_evt,
+                                &local_evt,
+                                &hist_evt,
+                            );
+                        }
+                    });
+                }
+            });
         });
     });
 
@@ -793,6 +863,8 @@ fn wire_callbacks(
     let close_sftp_manual_nav = sftp_manual_nav.clone();
     let close_bufs = bufs.clone();
     let close_statuses = tab_statuses.clone();
+    let close_local = local_snap.clone();
+    let close_hist = local_net_hist.clone();
     window.on_tab_closed(move |id: SharedString| {
         let id = id.to_string();
         if id == "welcome" {
@@ -812,20 +884,43 @@ fn wire_callbacks(
         if let Some(w) = weak.upgrade() {
             if w.get_active_tab_id().as_str() == id {
                 w.set_active_tab_id("welcome".into());
+                schedule_sidebar_refresh(
+                    weak.clone(),
+                    close_statuses.clone(),
+                    close_local.clone(),
+                    close_hist.clone(),
+                );
             }
         }
     });
 
-    window.on_tab_selected(|_| {});
+    let select_tab_statuses = tab_statuses.clone();
+    let select_tab_local = local_snap.clone();
+    let select_tab_hist = local_net_hist.clone();
+    let weak = window.as_weak();
+    window.on_tab_selected(move |id: SharedString| {
+        if let Some(w) = weak.upgrade() {
+            w.set_active_tab_id(id);
+        }
+        schedule_sidebar_refresh(
+            weak.clone(),
+            select_tab_statuses.clone(),
+            select_tab_local.clone(),
+            select_tab_hist.clone(),
+        );
+    });
 
     let select_statuses = tab_statuses.clone();
     let select_local = local_snap.clone();
     let select_hist = local_net_hist.clone();
     let weak = window.as_weak();
     window.on_refresh_sidebar(move || {
-        if let Some(w) = weak.upgrade() {
-            refresh_sidebar(&w, &select_statuses, &select_local, &select_hist);
-        }
+        schedule_sidebar_refresh(
+            weak.clone(),
+            select_statuses.clone(),
+            select_local.clone(),
+            select_hist.clone(),
+        );
     });
 
     let iface_statuses = tab_statuses.clone();
@@ -846,31 +941,16 @@ fn wire_callbacks(
     let resize_handles = handles.clone();
     let resize_bufs = bufs.clone();
     let resize_last_size = last_term_size.clone();
+    let resize_weak = window.as_weak();
     window.on_terminal_resize(move |tab_id: SharedString, cols_f: f32, rows_f: f32| {
-        let cols = (cols_f as u32).max(10);
-        let rows = (rows_f as u32).max(5);
-        *resize_last_size.lock().unwrap() = (cols, rows);
+        let tid = tab_id.to_string();
+        let (cols, rows, should_rebuild) =
+            resize_terminal_buffer(&tid, cols_f, rows_f, &resize_bufs, &resize_last_size);
         if let Some(handle) = resize_handles.borrow().get(tab_id.as_str()) {
             handle.resize(cols, rows);
         }
-        if let Some(buf) = resize_bufs.lock().unwrap().get_mut(tab_id.as_str()) {
-            let old_rows = buf.parser.screen().size().0;
-            if (rows as u16) < old_rows && !buf.parser.screen().alternate_screen() {
-                let delta = old_rows - rows as u16;
-                let cols_now = buf.parser.screen().size().1;
-                let s = buf.parser.screen();
-                for r in 0..delta {
-                    buf.history.push(build_row(s, r, cols_now));
-                }
-                if buf.history.len() > MAX_HISTORY {
-                    let drop = buf.history.len() - MAX_HISTORY;
-                    buf.history.drain(0..drop);
-                }
-                let scroll_up = format!("\x1b[{delta}S");
-                buf.parser.process(scroll_up.as_bytes());
-            }
-            buf.parser.set_size(rows as u16, cols as u16);
-            buf.prev.clear();
+        if should_rebuild {
+            schedule_terminal_display_rebuild(resize_weak.clone(), resize_bufs.clone(), tid);
         }
     });
 
@@ -1576,8 +1656,16 @@ fn apply_session_event_to_window(
             update_terminal(&|t| {
                 t.status = format!("{} - {reason}", crate::i18n::t("已断开", "Disconnected")).into()
             });
-            if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
-                st.state = 2;
+            let show_failure_alert = {
+                let mut statuses = statuses.lock().unwrap();
+                let previous_state = statuses.get(tab_id).map(|st| st.state);
+                if let Some(st) = statuses.get_mut(tab_id) {
+                    st.state = 2;
+                }
+                should_show_connection_failed_alert(previous_state)
+            };
+            if show_failure_alert {
+                show_connection_failed_alert(win, &reason);
             }
             if win.get_active_tab_id().as_str() == tab_id {
                 refresh_sidebar(win, statuses, local, local_net_hist);
@@ -1838,6 +1926,57 @@ fn rebuild_tab_display(win: &AppWindow, bufs: &TermBuffers, tab_id: &str) {
     });
 }
 
+fn resize_terminal_buffer(
+    tab_id: &str,
+    cols_f: f32,
+    rows_f: f32,
+    bufs: &TermBuffers,
+    last_size: &Arc<Mutex<(u32, u32)>>,
+) -> (u32, u32, bool) {
+    let cols = (cols_f as u32).max(10);
+    let rows = (rows_f as u32).max(5);
+    *last_size.lock().unwrap() = (cols, rows);
+
+    let mut should_rebuild = false;
+    if let Some(buf) = bufs.lock().unwrap().get_mut(tab_id) {
+        let old_rows = buf.parser.screen().size().0;
+        if (rows as u16) < old_rows && !buf.parser.screen().alternate_screen() {
+            let delta = old_rows - rows as u16;
+            let cols_now = buf.parser.screen().size().1;
+            let s = buf.parser.screen();
+            for r in 0..delta {
+                let line = build_row(s, r, cols_now);
+                if line_has_visible_content(&line) {
+                    buf.history.push(line);
+                }
+            }
+            if buf.history.len() > MAX_HISTORY {
+                let drop = buf.history.len() - MAX_HISTORY;
+                buf.history.drain(0..drop);
+            }
+            let scroll_up = format!("\x1b[{delta}S");
+            buf.parser.process(scroll_up.as_bytes());
+        }
+        buf.parser.set_size(rows as u16, cols as u16);
+        buf.prev.clear();
+        should_rebuild = true;
+    }
+
+    (cols, rows, should_rebuild)
+}
+
+fn schedule_terminal_display_rebuild(
+    weak: slint::Weak<AppWindow>,
+    bufs: TermBuffers,
+    tab_id: String,
+) {
+    Timer::single_shot(std::time::Duration::from_millis(1), move || {
+        if let Some(w) = weak.upgrade() {
+            rebuild_tab_display(&w, &bufs, &tab_id);
+        }
+    });
+}
+
 fn set_terminal_row(win: &AppWindow, tab_id: &str, mutator: impl Fn(&mut TerminalState)) {
     let terminals = win.get_terminals();
     let Some(model) = terminals.as_any().downcast_ref::<VecModel<TerminalState>>() else {
@@ -2042,6 +2181,10 @@ fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
         });
     }
     (plain, runs)
+}
+
+fn line_has_visible_content(line: &Line) -> bool {
+    !line.0.trim_end().is_empty() || !line.1.is_empty()
 }
 
 fn detect_scroll(prev: &[Line], curr: &[Line]) -> usize {
@@ -2329,5 +2472,40 @@ mod tests {
             "tail".to_string(),
         ];
         assert_eq!(extract_selection(&rows, 0, 6, 2, 1), "world\nmiddle\nta");
+    }
+
+    #[test]
+    fn only_shows_connection_failed_alert_before_successful_connect() {
+        assert!(should_show_connection_failed_alert(None));
+        assert!(should_show_connection_failed_alert(Some(0)));
+        assert!(!should_show_connection_failed_alert(Some(1)));
+        assert!(!should_show_connection_failed_alert(Some(2)));
+    }
+
+    #[test]
+    fn terminal_resize_requests_deferred_display_rebuild() {
+        let tab_id = "term-test";
+        let bufs: TermBuffers = Arc::new(Mutex::new(HashMap::new()));
+        let mut buf = TermBuffer {
+            parser: vt100::Parser::new(24, 80, 5000),
+            find_query: String::new(),
+            sel: None,
+            history: Vec::new(),
+            prev: Vec::new(),
+            view_offset: 0,
+            displayed_text: Vec::new(),
+            csi_state: CsiState::Normal,
+        };
+        buf.ingest(b"hello");
+        bufs.lock().unwrap().insert(tab_id.to_string(), buf);
+        let last_size = Arc::new(Mutex::new((80, 24)));
+
+        let (cols, rows, should_rebuild) =
+            resize_terminal_buffer(tab_id, 120.0, 40.0, &bufs, &last_size);
+
+        assert_eq!((cols, rows), (120, 40));
+        assert_eq!(*last_size.lock().unwrap(), (120, 40));
+        assert!(should_rebuild);
+        assert_eq!(bufs.lock().unwrap()[tab_id].parser.screen().size(), (40, 120));
     }
 }

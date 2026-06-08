@@ -87,6 +87,7 @@ export component TerminalView inherits Rectangle {
     in property <[SftpTreeNode]> sftp-tree-nodes: [];
 
     in-out property <length> sftp-panel-height: 220px;
+    in-out property <bool> sftp-panel-collapsed: false;
 
     callback send-key(string, bool, bool, bool);
     callback terminal-resize(float, float);
@@ -167,8 +168,8 @@ export component TerminalView inherits Rectangle {
     // columns reflows the vt100 screen and destroys the scrollback, so when you
     // switch back the output is gone.  Guarding on `visible` keeps each hidden
     // session frozen at its real size; `changed visible` re-syncs on return.
-    changed term-cols => { if (root.visible) { root.terminal-resize(root.term-cols, root.term-rows); } }
-    changed term-rows => { if (root.visible) { root.terminal-resize(root.term-cols, root.term-rows); } }
+    changed term-cols => { if (root.visible && !root.sftp-dragging) { root.terminal-resize(root.term-cols, root.term-rows); } }
+    changed term-rows => { if (root.visible && !root.sftp-dragging) { root.terminal-resize(root.term-cols, root.term-rows); } }
 
     init => { root.terminal-resize(root.term-cols, root.term-rows); }
 
@@ -272,7 +273,13 @@ export component TerminalView inherits Rectangle {
                     // so the full-screen program (nano/vim) renders top-aligned
                     // with no internal scroll.  Bash: let the viewport grow with
                     // the content so we can scroll back through history.
-                    viewport-height: root.is-alt-screen
+                    //
+                    // While resizing the SFTP panel, keep the terminal viewport
+                    // visually fixed to the visible area. The PTY resize is
+                    // intentionally deferred until mouse-up; letting the UI
+                    // scrollback grow from stale row coordinates during the drag
+                    // leaves large gaps between shell prompts.
+                    viewport-height: root.is-alt-screen || root.sftp-dragging
                         ? self.height
                         : max(self.height, 8px + root.rows-used * root.cell-h + 8px);
 
@@ -604,7 +611,38 @@ export component TerminalView inherits Rectangle {
             }
         }
 
+        if root.sftp-panel-collapsed : Rectangle {
+            height: 26px;
+            background: Theme.bg-panel-alt;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.sftp-panel-collapsed = false; }
+            }
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 6px;
+                Text {
+                    text: "\u{E5CF}";
+                    font-family: "Material Icons";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: @tr("Expand file manager");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-xs;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+
         // --- Drag handle ----------------------------------------------------
+        if !root.sftp-panel-collapsed :
         Rectangle {
             height: 4px;
             background: divider-ta.has-hover || root.sftp-dragging
@@ -618,8 +656,11 @@ export component TerminalView inherits Rectangle {
                     if (ev.kind == PointerEventKind.down) {
                         root.sftp-dragging      = true;
                         root.drag-start-mouse-y = self.mouse-y;
+                        ime-input.focus();
                     } else if (ev.kind == PointerEventKind.up) {
                         root.sftp-dragging = false;
+                        root.terminal-resize(root.term-cols, root.term-rows);
+                        ime-input.focus();
                     }
                 }
 
@@ -636,7 +677,7 @@ export component TerminalView inherits Rectangle {
         }
 
         // --- SFTP panel -----------------------------------------------------
-        SftpPanel {
+        if !root.sftp-panel-collapsed : SftpPanel {
             height: root.sftp-panel-height;
             current-path:  root.sftp-path;
             entries:       root.sftp-entries;
@@ -651,6 +692,7 @@ export component TerminalView inherits Rectangle {
             delete(path)        => { root.sftp-delete(path); }
             view(path)          => { root.sftp-view(path); }
             edit(path)          => { root.sftp-edit(path); }
+            collapse-clicked()  => { root.sftp-panel-collapsed = true; }
         }
     }
 }

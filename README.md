@@ -13,6 +13,22 @@ cargo build --release
 
 The release binary is written to `target/release/LibSSH`.
 
+## AI Skill CLI
+
+LibSSH includes a guarded CLI surface for Codex, Claude Code, and similar AI tools. It is disabled by default and never prints saved passwords, proxy credentials, or private-key paths in session listings.
+
+```bash
+LibSSH skill export
+LibSSH skill sessions
+LibSSH skill policy enable
+LibSSH skill policy allow "uptime"
+LibSSH skill policy deny "systemctl reboot"
+LibSSH skill check --command "uptime"
+LibSSH skill run --session "<id-or-name>" --command "uptime"
+```
+
+`skill export` prints a SKILL.md-style instruction block for AI tools. Remote commands must pass the enabled flag, the configured allow list, the configured deny list, and the built-in safety policy. CLI output is redacted before it is printed back to the caller.
+
 ## Platform Packaging
 
 Icon assets are generated from `assets/icon.png`:

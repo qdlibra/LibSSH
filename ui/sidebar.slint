@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { Palette } from "std-widgets.slint";
 import { Sparkline } from "widgets.slint";
 
 // One filesystem row for the disk-usage panel.
@@ -187,6 +188,37 @@ component NetGraph inherits VerticalLayout {
     }
 }
 
+component ThemeModeButton inherits Rectangle {
+    in property <string> label;
+    in property <int> value;
+    callback clicked();
+
+    height: 24px;
+    min-width: 48px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.mode == root.value ? Theme.accent : Theme.border-subtle;
+    background: Theme.mode == root.value ? Theme.accent.with-alpha(0.22)
+              : theme-button-ta.has-hover ? Theme.bg-hover
+              : Theme.bg-panel-alt;
+
+    theme-button-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.label;
+        color: Theme.mode == root.value ? Theme.accent : Theme.text-secondary;
+        font-size: Theme.fs-xs;
+        font-weight: Theme.mode == root.value ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
 // --- Sidebar ---------------------------------------------------------------
 // Left-hand panel showing local machine health, mimicking FinalShell's
 // @tr("Status") column but kept minimal for the v0.1 baseline.
@@ -209,13 +241,43 @@ export component Sidebar inherits Rectangle {
     in property <string> net-selected;
     in property <bool> net-show-selector;
     in property <[DiskInfo]> disks;
+    in-out property <bool> collapsed: false;
     callback select-net-iface(string);
 
-    width: 220px;
+    width: root.collapsed ? 30px : 220px;
     background: Theme.bg-panel;
     border-width: 0;
 
+    if root.collapsed : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.bg-panel;
+
+        Rectangle {
+            x: 4px;
+            y: 8px;
+            width: 22px;
+            height: 22px;
+            border-radius: Theme.radius-sm;
+            background: show-ta.has-hover ? Theme.bg-hover : transparent;
+            show-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.collapsed = false; }
+            }
+            Text {
+                text: "\u{E5CC}";
+                font-family: "Material Icons";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-sm;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+    }
+
     VerticalLayout {
+        visible: !root.collapsed;
         padding: 10px;
         spacing: 10px;
 
@@ -237,6 +299,26 @@ export component Sidebar inherits Rectangle {
                     color: Theme.text-primary;
                     font-size: Theme.fs-md;
                     font-weight: 600;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 22px;
+                    height: 22px;
+                    border-radius: Theme.radius-sm;
+                    background: hide-ta.has-hover ? Theme.bg-hover : transparent;
+                    hide-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.collapsed = true; }
+                    }
+                    Text {
+                        text: "\u{E5CB}";
+                        font-family: "Material Icons";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-sm;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
             }
             Text {
@@ -384,6 +466,35 @@ export component Sidebar inherits Rectangle {
             color: Theme.text-muted;
             font-size: Theme.fs-xs;
             horizontal-alignment: center;
+        }
+
+        HorizontalLayout {
+            height: 24px;
+            spacing: 4px;
+            ThemeModeButton {
+                label: @tr("高亮");
+                value: 1;
+                clicked => {
+                    Theme.mode = 1;
+                    Palette.color-scheme = ColorScheme.light;
+                }
+            }
+            ThemeModeButton {
+                label: @tr("暗夜");
+                value: 2;
+                clicked => {
+                    Theme.mode = 2;
+                    Palette.color-scheme = ColorScheme.dark;
+                }
+            }
+            ThemeModeButton {
+                label: @tr("系统");
+                value: 0;
+                clicked => {
+                    Theme.mode = 0;
+                    Palette.color-scheme = ColorScheme.unknown;
+                }
+            }
         }
     }
 }

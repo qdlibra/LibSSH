@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { ScrollView } from "std-widgets.slint";
+import { LineEdit, ScrollView } from "std-widgets.slint";
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -64,8 +64,12 @@ export component SftpPanel inherits Rectangle {
     callback delete(string);        // remove a remote file/dir
     callback view(string);          // download to temp + open (read)
     callback edit(string);          // download to temp + open + auto-reupload
+    callback collapse-clicked();
 
     // -----------------------------------------------------------------------
+    property <string> path-draft: current-path;
+    changed current-path => { root.path-draft = root.current-path; }
+
     background: Theme.bg-panel;
 
     VerticalLayout {
@@ -81,14 +85,17 @@ export component SftpPanel inherits Rectangle {
                 padding-right: 6px;
                 spacing: 4px;
 
-                // Path bar fills the left; action buttons sit on the right.
-                Text {
-                    text: root.current-path;
-                    color: Theme.text-primary;
+                // Editable path bar: press Enter to navigate.
+                LineEdit {
+                    text <=> root.path-draft;
+                    placeholder-text: @tr("Enter remote path");
                     font-size: Theme.fs-sm;
                     horizontal-stretch: 1;
-                    overflow: elide;
-                    vertical-alignment: center;
+                    accepted(path) => {
+                        if (path != "") {
+                            root.navigate(path);
+                        }
+                    }
                 }
 
                 up-btn := Rectangle {
@@ -126,6 +133,24 @@ export component SftpPanel inherits Rectangle {
                     Text { text: "\u{E5D5}"; font-family: "Material Icons";
                            color: Theme.text-secondary; font-size: Theme.fs-sm;
                            horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    width: 24px; height: 22px;
+                    border-radius: Theme.radius-sm;
+                    background: collapse-ta.has-hover ? Theme.bg-hover : transparent;
+                    collapse-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.collapse-clicked(); }
+                    }
+                    Text {
+                        text: "\u{E5CE}";
+                        font-family: "Material Icons";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-sm;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }

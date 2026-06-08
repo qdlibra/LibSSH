@@ -6,6 +6,34 @@ use std::path::PathBuf;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
+const BUILTIN_DENIED_COMMANDS: &[&str] = &[
+    "rm",
+    "dd",
+    "mkfs",
+    "shutdown",
+    "reboot",
+    "halt",
+    "poweroff",
+    "passwd",
+    "userdel",
+    "groupdel",
+    "chown",
+    "chmod",
+    "sudo",
+    "su",
+    "env",
+    "printenv",
+    "set",
+    "history",
+    "kubectl get secret",
+    "kubectl describe secret",
+    "aws secretsmanager",
+    "gcloud secrets",
+    "op item",
+    "pass",
+    "security find-generic-password",
+];
+
 /// A secret string whose heap buffer is zeroed when dropped.
 #[derive(Clone, Default)]
 pub struct Secret(String);
@@ -93,6 +121,33 @@ pub struct Session {
     pub last_used: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AiSessionSummary {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub auth: AuthMethod,
+    pub has_password: bool,
+    pub has_private_key: bool,
+}
+
+impl From<&Session> for AiSessionSummary {
+    fn from(session: &Session) -> Self {
+        Self {
+            id: session.id.clone(),
+            name: session.name.clone(),
+            host: session.host.clone(),
+            port: session.port,
+            user: session.user.clone(),
+            auth: session.auth,
+            has_password: !session.password.as_str().is_empty(),
+            has_private_key: !session.private_key_path.trim().is_empty(),
+        }
+    }
+}
+
 impl Session {
     pub fn new_empty() -> Self {
         Self {
@@ -110,6 +165,85 @@ impl Session {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiSkillConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub allowed_commands: Vec<String>,
+    #[serde(default)]
+    pub denied_commands: Vec<String>,
+}
+
+impl Default for AiSkillConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allowed_commands: Vec::new(),
+            denied_commands: Vec::new(),
+        }
+    }
+}
+
+impl AiSkillConfig {
+    pub fn evaluate_command(&self, command: &str) -> std::result::Result<(), String> {
+        let command = command.trim();
+        if command.is_empty() {
+            return Err("empty command is not allowed".to_string());
+        }
+        if !self.enabled {
+            return Err("AI skill CLI is disabled".to_string());
+        }
+        if matches_any_command(command, BUILTIN_DENIED_COMMANDS.iter().copied()) {
+            return Err("command is blocked by the built-in safety policy".to_string());
+        }
+        if contains_sensitive_assignment(command) {
+            return Err("command appears to contain sensitive inline data".to_string());
+        }
+        if matches_any_command(command, self.denied_commands.iter().map(String::as_str)) {
+            return Err("command is blocked by the configured deny list".to_string());
+        }
+        if self.allowed_commands.is_empty() {
+            return Err("no allowed commands are configured".to_string());
+        }
+        if !matches_any_command(command, self.allowed_commands.iter().map(String::as_str)) {
+            return Err("command is not in the configured allow list".to_string());
+        }
+        Ok(())
+    }
+}
+
+fn matches_any_command<'a>(command: &str, rules: impl Iterator<Item = &'a str>) -> bool {
+    rules
+        .map(str::trim)
+        .filter(|rule| !rule.is_empty())
+        .any(|rule| command_matches_rule(command, rule))
+}
+
+fn command_matches_rule(command: &str, rule: &str) -> bool {
+    command == rule
+        || command
+            .strip_prefix(rule)
+            .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+}
+
+fn contains_sensitive_assignment(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    [
+        "password",
+        "passwd",
+        "token",
+        "api_key",
+        "apikey",
+        "secret",
+        "credential",
+        "private_key",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+        && (command.contains('=') || command.contains(':'))
+}
+
 /// On-disk layout. Keep additive to ease forward compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigFile {
@@ -121,6 +255,9 @@ pub struct ConfigFile {
     /// UI language code: "zh" (default) or "en".
     #[serde(default)]
     pub language: String,
+    /// Local-only guardrails for CLI access by AI coding agents.
+    #[serde(default)]
+    pub ai_skill: AiSkillConfig,
 }
 
 pub struct ConfigStore {
@@ -210,6 +347,14 @@ impl ConfigStore {
 
     pub fn set_language(&mut self, lang: String) {
         self.cache.language = lang;
+    }
+
+    pub fn ai_skill(&self) -> &AiSkillConfig {
+        &self.cache.ai_skill
+    }
+
+    pub fn ai_skill_mut(&mut self) -> &mut AiSkillConfig {
+        &mut self.cache.ai_skill
     }
 
     pub fn save(&self) -> Result<()> {
@@ -337,5 +482,56 @@ mod tests {
 
         store.remove("session-1");
         assert!(store.sessions().is_empty());
+    }
+
+    #[test]
+    fn ai_skill_policy_is_disabled_and_rejects_commands_by_default() {
+        let policy = AiSkillConfig::default();
+
+        assert!(!policy.enabled);
+        assert!(policy.allowed_commands.is_empty());
+        assert!(policy.denied_commands.is_empty());
+        assert!(policy.evaluate_command("uptime").is_err());
+    }
+
+    #[test]
+    fn ai_skill_policy_denied_commands_take_precedence_over_allowed_commands() {
+        let mut policy = AiSkillConfig {
+            enabled: true,
+            allowed_commands: vec!["systemctl".to_string()],
+            denied_commands: vec!["systemctl reboot".to_string()],
+        };
+
+        assert!(policy.evaluate_command("systemctl status sshd").is_ok());
+        assert!(policy.evaluate_command("systemctl reboot").is_err());
+
+        policy.denied_commands.clear();
+        assert!(policy.evaluate_command("rm -rf /").is_err());
+        assert!(policy.evaluate_command("env").is_err());
+        assert!(policy.evaluate_command("echo token=abc123").is_err());
+    }
+
+    #[test]
+    fn ai_visible_session_summary_redacts_credentials() {
+        let mut session = Session::new_empty();
+        session.id = "session-1".to_string();
+        session.name = "Production".to_string();
+        session.host = "prod.example.com".to_string();
+        session.port = 2200;
+        session.user = "deploy".to_string();
+        session.auth = AuthMethod::Key;
+        session.password = Secret::new("super-secret");
+        session.private_key_path = "/Users/me/.ssh/prod.pem".to_string();
+
+        let summary = AiSessionSummary::from(&session);
+        let json = serde_json::to_string(&summary).unwrap();
+
+        assert!(json.contains("Production"));
+        assert!(json.contains("prod.example.com"));
+        assert!(json.contains("\"has_password\":true"));
+        assert!(json.contains("\"has_private_key\":true"));
+        assert!(!json.contains("super-secret"));
+        assert!(!json.contains("prod.pem"));
+        assert!(!json.contains("/Users/me/.ssh"));
     }
 }

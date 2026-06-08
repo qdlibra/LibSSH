@@ -108,6 +108,9 @@ msgstr "Create"
 msgid "SFTP not connected"
 msgstr "SFTP not connected"
 
+msgid "Enter remote path"
+msgstr "Enter remote path"
+
 msgid "Upload"
 msgstr "Upload"
 
@@ -167,6 +170,9 @@ msgstr "Clear buffer"
 
 msgid "Find"
 msgstr "Find"
+
+msgid "Expand file manager"
+msgstr "Expand file manager"
 
 msgid "LibSSH — a lightweight Rust + Slint SSH client by 'lil meatball'"
 msgstr "LibSSH — a lightweight Rust + Slint SSH client by 'lil meatball'"

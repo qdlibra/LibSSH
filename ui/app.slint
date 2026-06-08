@@ -88,6 +88,10 @@ export component AppWindow inherits Window {
     in-out property <bool> download-open: false;  // download manager popup
     in-out property <bool> settings-open: false;  // settings menu popup
     in-out property <bool> about-open: false;     // centered About dialog
+    in-out property <bool> sidebar-hidden: false; // collapsed left status/resource panel
+    in-out property <bool> alert-open: false;
+    in-out property <string> alert-title;
+    in-out property <string> alert-message;
     in property <string> download-dir;      // preset SFTP download folder ("" = ask)
     in property <[TransferInfo]> transfers; // download/upload records (newest first)
     in property <[string]> about-libs;      // open-source libraries used
@@ -135,7 +139,6 @@ export component AppWindow inherits Window {
     // Asks Rust to recompute the sidebar (status + resources) for whatever tab
     // is now active.  Fired on every active-tab change, UI- or code-driven.
     callback refresh-sidebar();
-    changed active-tab-id => { root.refresh-sidebar(); }
 
     // Raw keystroke forwarding: Rust converts key+modifiers to PTY bytes.
     callback send-key(string /* tab-id */, string /* key */, bool /* ctrl */, bool /* alt */, bool /* shift */);
@@ -197,6 +200,7 @@ export component AppWindow inherits Window {
             net-selected: root.net-selected;
             net-show-selector: root.net-show-selector;
             disks: root.disks;
+            collapsed <=> root.sidebar-hidden;
             select-net-iface(i) => { root.select-net-iface(i); }
         }
 
@@ -209,7 +213,6 @@ export component AppWindow inherits Window {
                 tabs: root.tabs;
                 active-id: root.active-tab-id;
                 tab-selected(id) => {
-                    root.active-tab-id = id;
                     root.tab-selected(id);
                 }
                 tab-closed(id) => { root.tab-closed(id); }
@@ -593,6 +596,72 @@ export component AppWindow inherits Window {
                            vertical-alignment: center; }
                     Text { text: @tr("About"); color: Theme.text-primary; font-size: Theme.fs-md;
                            vertical-alignment: center; horizontal-stretch: 1; }
+                }
+            }
+        }
+    }
+
+    // --- Non-blocking alert ----------------------------------------------
+    Rectangle {
+        visible: root.alert-open;
+        x: max(16px, parent.width - self.width - 18px);
+        y: 48px;
+        width: min(460px, parent.width - 32px);
+        height: 86px;
+        background: Theme.bg-panel;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.danger;
+        drop-shadow-blur: 18px;
+        drop-shadow-color: #00000070;
+
+        HorizontalLayout {
+            padding: 12px;
+            spacing: 10px;
+
+            Text {
+                text: "\u{E000}";
+                font-family: "Material Icons";
+                color: Theme.danger;
+                font-size: Theme.fs-xl;
+                vertical-alignment: center;
+            }
+
+            VerticalLayout {
+                spacing: 4px;
+                horizontal-stretch: 1;
+                Text {
+                    text: root.alert-title;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-md;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.alert-message;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                    wrap: word-wrap;
+                    vertical-stretch: 1;
+                }
+            }
+
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: Theme.radius-sm;
+                background: alert-close.has-hover ? Theme.bg-hover : transparent;
+                alert-close := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.alert-open = false; }
+                }
+                Text {
+                    text: "\u{E5CD}";
+                    font-family: "Material Icons";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
                 }
             }
         }

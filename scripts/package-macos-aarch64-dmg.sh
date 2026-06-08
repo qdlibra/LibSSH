@@ -8,6 +8,7 @@ BIN_PATH="${1:-$ROOT/target/release/$APP_NAME}"
 DIST_DIR="${2:-$ROOT/dist}"
 ARCH="$(uname -m)"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
+DMG_ROOT="$DIST_DIR/dmg-root"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
@@ -61,5 +62,10 @@ cat > "$CONTENTS/Info.plist" <<EOF
 EOF
 
 rm -f "$DMG"
-hdiutil create -volname "$APP_NAME" -srcfolder "$APP_DIR" -ov -format UDZO "$DMG"
+rm -rf "$DMG_ROOT"
+mkdir -p "$DMG_ROOT"
+cp -R "$APP_DIR" "$DMG_ROOT/$APP_NAME.app"
+ln -s /Applications "$DMG_ROOT/Applications"
+
+hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG"
 echo "$DMG"

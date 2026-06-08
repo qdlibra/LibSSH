@@ -3,10 +3,10 @@
 //! Each open terminal tab maps to exactly one worker task. Commands come in via
 //! an MPSC channel and session events are pushed back to the UI.
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use russh::client::{self, Handle, Handler};
 use russh::keys::key::PrivateKeyWithHashAlg;
@@ -194,6 +194,133 @@ impl SessionHandle {
     }
 }
 
+pub struct ExecResult {
+    pub exit_status: Option<u32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+pub(crate) fn private_key_path_for_auth(raw: &str) -> Result<PathBuf> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(anyhow!(t("私钥路径为空", "private key path is empty")));
+    }
+
+    let normalised = raw.replace('\\', "/");
+    let without_public_suffix = normalised
+        .strip_suffix(".pub")
+        .map(str::to_string)
+        .unwrap_or(normalised);
+
+    if without_public_suffix == "~" {
+        if let Some(home) = directories::UserDirs::new() {
+            return Ok(home.home_dir().to_path_buf());
+        }
+    } else if let Some(rest) = without_public_suffix.strip_prefix("~/") {
+        if let Some(home) = directories::UserDirs::new() {
+            return Ok(home.home_dir().join(rest));
+        }
+    }
+
+    Ok(PathBuf::from(without_public_suffix))
+}
+
+pub(crate) fn load_private_key_for_auth(raw: &str) -> Result<PrivateKeyWithHashAlg> {
+    let key_path = private_key_path_for_auth(raw)?;
+    let keypair = load_secret_key(&key_path, None)
+        .with_context(|| format!("failed to load key {}", key_path.display()))?;
+    let hash = if keypair.algorithm().is_rsa() {
+        Some(HashAlg::Sha256)
+    } else {
+        None
+    };
+    PrivateKeyWithHashAlg::new(Arc::new(keypair), hash)
+        .context("invalid private key / hash algorithm combination")
+}
+
+pub async fn run_exec(session: Session, command: &str) -> Result<ExecResult> {
+    let config = Arc::new(client::Config {
+        inactivity_timeout: Some(std::time::Duration::from_secs(60 * 10)),
+        ..<_>::default()
+    });
+    let handler = ClientHandler {};
+    let addr = format!("{}:{}", session.host, session.port);
+    let mut handle = match crate::proxy::resolve(&session.proxy) {
+        Some(proxy) => {
+            let stream = crate::proxy::connect(&proxy, &session.host, session.port)
+                .await
+                .with_context(|| format!("proxy connect to {} failed", addr))?;
+            client::connect_stream(config, stream, handler)
+                .await
+                .with_context(|| format!("connect {} failed", addr))?
+        }
+        None => client::connect(config, addr.as_str(), handler)
+            .await
+            .with_context(|| format!("connect {} failed", addr))?,
+    };
+
+    let authed = match session.auth {
+        AuthMethod::Password => handle
+            .authenticate_password(&session.user, session.password.as_str())
+            .await
+            .context("password auth failed")?,
+        AuthMethod::Key => {
+            let key_with_hash = load_private_key_for_auth(&session.private_key_path)?;
+            handle
+                .authenticate_publickey(&session.user, key_with_hash)
+                .await
+                .context("publickey auth failed")?
+        }
+    };
+
+    if !authed {
+        let _ = handle
+            .disconnect(Disconnect::ByApplication, "auth failed", "")
+            .await;
+        bail!("authentication failed");
+    }
+
+    let mut channel = handle
+        .channel_open_session()
+        .await
+        .context("open exec channel")?;
+    channel
+        .exec(true, command.as_bytes())
+        .await
+        .context("start remote command")?;
+
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut exit_status = None;
+    loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(120), channel.wait())
+            .await
+            .context("remote command timed out")?;
+        match msg {
+            Some(ChannelMsg::Data { data }) => {
+                stdout.push_str(&String::from_utf8_lossy(&data));
+            }
+            Some(ChannelMsg::ExtendedData { data, ext: _ }) => {
+                stderr.push_str(&String::from_utf8_lossy(&data));
+            }
+            Some(ChannelMsg::ExitStatus { exit_status: code }) => {
+                exit_status = Some(code);
+            }
+            Some(ChannelMsg::Close) | None => break,
+            _ => {}
+        }
+    }
+
+    let _ = handle
+        .disconnect(Disconnect::ByApplication, "bye", "")
+        .await;
+    Ok(ExecResult {
+        exit_status,
+        stdout,
+        stderr,
+    })
+}
+
 pub fn spawn_session(
     runtime: &tokio::runtime::Handle,
     tab_id: String,
@@ -276,24 +403,7 @@ async fn run_session(
             .await
             .context("password auth failed")?,
         AuthMethod::Key => {
-            let raw = session.private_key_path.trim();
-            if raw.is_empty() {
-                return Err(anyhow!(t("私钥路径为空", "private key path is empty")));
-            }
-            let normalised = raw.replace('\\', "/");
-            let key_path = normalised
-                .strip_suffix(".pub")
-                .map(str::to_string)
-                .unwrap_or(normalised);
-            let keypair = load_secret_key(Path::new(&key_path), None)
-                .with_context(|| format!("failed to load key {key_path}"))?;
-            let hash = if keypair.algorithm().is_rsa() {
-                Some(HashAlg::Sha256)
-            } else {
-                None
-            };
-            let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash)
-                .context("invalid private key / hash algorithm combination")?;
+            let key_with_hash = load_private_key_for_auth(&session.private_key_path)?;
             handle
                 .authenticate_publickey(&session.user, key_with_hash)
                 .await
@@ -633,6 +743,25 @@ mod tests {
         assert_eq!(
             extract_osc7_path("\x1b]7;file:///tmp\x1b\\"),
             Some("/tmp".to_string())
+        );
+    }
+
+    #[test]
+    fn normalises_private_key_path_for_auth() {
+        let path = private_key_path_for_auth(r"C:\Users\me\.ssh\id_rsa.pub").unwrap();
+        assert_eq!(path, PathBuf::from("C:/Users/me/.ssh/id_rsa"));
+
+        let home = directories::UserDirs::new().unwrap();
+        let path = private_key_path_for_auth("~/.ssh/id_ed25519.pub").unwrap();
+        assert_eq!(path, home.home_dir().join(".ssh/id_ed25519"));
+    }
+
+    #[test]
+    fn rejects_empty_private_key_path_before_loading() {
+        let err = private_key_path_for_auth("   ").unwrap_err().to_string();
+        assert!(
+            err.contains("私钥路径为空") || err.contains("private key path is empty"),
+            "{err}"
         );
     }
 

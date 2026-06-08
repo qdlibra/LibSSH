@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod cli;
 mod config;
 mod i18n;
 mod proxy;
@@ -19,6 +20,11 @@ fn main() -> anyhow::Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+
+    let args: Vec<String> = std::env::args().collect();
+    if cli::handles_args(&args) {
+        return cli::run_args(&args);
+    }
 
     app::run()
 }

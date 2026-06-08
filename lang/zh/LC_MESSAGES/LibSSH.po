@@ -108,6 +108,9 @@ msgstr "创建"
 msgid "SFTP not connected"
 msgstr "SFTP 未连接"
 
+msgid "Enter remote path"
+msgstr "输入远程路径"
+
 msgid "Upload"
 msgstr "上传"
 
@@ -167,6 +170,9 @@ msgstr "清空缓存"
 
 msgid "Find"
 msgstr "查找"
+
+msgid "Expand file manager"
+msgstr "展开文件管理器"
 
 msgid "LibSSH — a lightweight Rust + Slint SSH client by 'lil meatball'"
 msgstr "LibSSH 一个由「一坨肉」开发的轻量 Rust + Slint SSH 客户端"
