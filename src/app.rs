@@ -9,7 +9,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, Vec
 use tokio::runtime::Runtime;
 
 use crate::config::{AuthMethod, ConfigStore, Secret, Session};
-use crate::ssh::{spawn_session, SessionEvent, SessionHandle};
+use crate::ssh::{spawn_session, SessionCommand, SessionEvent, SessionHandle};
 use crate::system::{format_bytes_per_sec, SystemSampler, SystemSnapshot};
 
 const NET_HISTORY_LEN: usize = 60;
@@ -766,23 +766,93 @@ fn wire_callbacks(
             handle.resize(cols, rows);
         }
         if let Some(buf) = resize_bufs.lock().unwrap().get_mut(tab_id.as_str()) {
+            let old_rows = buf.parser.screen().size().0;
+            if (rows as u16) < old_rows && !buf.parser.screen().alternate_screen() {
+                let delta = old_rows - rows as u16;
+                let cols_now = buf.parser.screen().size().1;
+                let s = buf.parser.screen();
+                for r in 0..delta {
+                    buf.history.push(build_row(s, r, cols_now));
+                }
+                if buf.history.len() > MAX_HISTORY {
+                    let drop = buf.history.len() - MAX_HISTORY;
+                    buf.history.drain(0..drop);
+                }
+                let scroll_up = format!("\x1b[{delta}S");
+                buf.parser.process(scroll_up.as_bytes());
+            }
             buf.parser.set_size(rows as u16, cols as u16);
+            buf.prev.clear();
         }
     });
 
     let send_handles = handles.clone();
     let send_bufs = bufs.clone();
+    let last_shift_time: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
     window.on_send_key(
-        move |tab_id: SharedString, key: SharedString, ctrl, alt, _shift| {
-            let app_cursor = send_bufs
-                .lock()
-                .ok()
-                .and_then(|m| {
-                    m.get(tab_id.as_str())
-                        .map(|b| b.parser.screen().application_cursor())
-                })
-                .unwrap_or(false);
-            let bytes = key_to_pty_bytes(key.as_str(), ctrl, alt, app_cursor);
+        move |tab_id: SharedString, key: SharedString, ctrl, alt, shift| {
+            let key = key.to_string();
+            let app_cursor = {
+                let mut map = send_bufs.lock().unwrap();
+                match map.get_mut(tab_id.as_str()) {
+                    Some(buf) => {
+                        buf.view_offset = 0;
+                        buf.parser.screen().application_cursor()
+                    }
+                    None => false,
+                }
+            };
+
+            if key.is_empty() && shift && !ctrl && !alt {
+                *last_shift_time.lock().unwrap() = Some(std::time::Instant::now());
+                return;
+            }
+
+            if !ctrl && !alt {
+                if let Some(c) = key.chars().next() {
+                    let cp = c as u32;
+                    let standalone = matches!(cp, 0x08 | 0x09 | 0x0A | 0x0D | 0x1B);
+                    if key.chars().count() == 1 && (0x01..=0x1f).contains(&cp) && !standalone {
+                        *last_shift_time.lock().unwrap() = Some(std::time::Instant::now());
+                        return;
+                    }
+                }
+            }
+
+            #[cfg(windows)]
+            if ctrl {
+                if let Some(ch) = key.chars().next() {
+                    let cp = ch as u32;
+                    let always_pass = matches!(cp, 0x09 | 0x0a | 0x0d);
+                    if !always_pass
+                        && key.chars().count() == 1
+                        && (0x01..=0x1a).contains(&cp)
+                        && !c0_letter_key_down(cp)
+                    {
+                        return;
+                    }
+                }
+            }
+
+            if key == "\u{0008}" && !ctrl && !alt {
+                if shift {
+                    return;
+                }
+                let shift_recent = last_shift_time
+                    .lock()
+                    .unwrap()
+                    .map(|t| t.elapsed().as_millis() < 1500)
+                    .unwrap_or(false);
+                if shift_recent {
+                    return;
+                }
+                #[cfg(windows)]
+                if !is_vk_back_down() {
+                    return;
+                }
+            }
+
+            let bytes = key_to_pty_bytes(&key, ctrl, alt, app_cursor);
             if !bytes.is_empty() {
                 if let Some(handle) = send_handles.borrow().get(tab_id.as_str()) {
                     handle.send_raw(bytes);
@@ -792,7 +862,10 @@ fn wire_callbacks(
     );
 
     let clear_bufs = bufs.clone();
+    let clear_handles = handles.clone();
+    let weak = window.as_weak();
     window.on_clear_terminal(move |tab_id: SharedString| {
+        let tid = tab_id.to_string();
         if let Some(buf) = clear_bufs.lock().unwrap().get_mut(tab_id.as_str()) {
             let (rows, cols) = buf.parser.screen().size();
             buf.parser = vt100::Parser::new(rows, cols, 5000);
@@ -802,6 +875,20 @@ fn wire_callbacks(
             buf.displayed_text.clear();
             buf.find_query.clear();
             buf.sel = None;
+        }
+        if let Some(w) = weak.upgrade() {
+            set_terminal_row(&w, &tid, |row| {
+                row.spans = empty_model::<TermSpan>();
+                row.find_matches = empty_model::<TermMatch>();
+                row.selection = empty_model::<TermMatch>();
+                row.cursor_row = 0;
+                row.cursor_col = 0;
+                row.rows_used = 0;
+                row.is_alt_screen = false;
+            });
+        }
+        if let Some(handle) = clear_handles.borrow().get(&tid) {
+            handle.send_raw(vec![0x0c]);
         }
     });
 
@@ -826,6 +913,158 @@ fn wire_callbacks(
         }
         if let Some(w) = weak.upgrade() {
             rebuild_tab_display(&w, &scroll_bufs, tab_id.as_str());
+        }
+    });
+
+    let copy_bufs = bufs.clone();
+    window.on_copy_terminal_text(move |tab_id: SharedString| {
+        let text = {
+            let map = copy_bufs.lock().unwrap();
+            match map.get(tab_id.as_str()) {
+                Some(buf) => match buf.sel {
+                    Some((sr, sc, er, ec)) if (sr, sc) != (er, ec) => {
+                        extract_selection(&buf.displayed_text, sr, sc, er, ec)
+                    }
+                    _ => buf.displayed_text.join("\n"),
+                },
+                None => String::new(),
+            }
+        };
+        std::thread::spawn(move || {
+            if let Err(err) = arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
+                tracing::warn!("copy_terminal_text failed: {err}");
+            }
+        });
+    });
+
+    let paste_handles = handles.clone();
+    window.on_paste_from_clipboard(move |tab_id: SharedString| {
+        let sender = paste_handles
+            .borrow()
+            .get(tab_id.as_str())
+            .map(|h| h.commands.clone());
+        let Some(sender) = sender else {
+            return;
+        };
+        std::thread::spawn(move || {
+            match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
+                Ok(text) => {
+                    let _ = sender.send(SessionCommand::RawInput(text.into_bytes()));
+                }
+                Err(err) => tracing::warn!("paste_from_clipboard failed: {err}"),
+            }
+        });
+    });
+
+    let select_bufs = bufs.clone();
+    let weak = window.as_weak();
+    window.on_term_select_start(move |tab_id: SharedString, row, col| {
+        let tid = tab_id.to_string();
+        {
+            let mut map = select_bufs.lock().unwrap();
+            let Some(buf) = map.get_mut(&tid) else {
+                return;
+            };
+            let (rows, cols) = buf.parser.screen().size();
+            let r = row.clamp(0, rows.saturating_sub(1) as i32) as u16;
+            let c = col.clamp(0, cols.saturating_sub(1) as i32) as u16;
+            buf.sel = Some((r, c, r, c));
+        }
+        if let Some(w) = weak.upgrade() {
+            rebuild_tab_display(&w, &select_bufs, &tid);
+        }
+    });
+
+    let select_bufs = bufs.clone();
+    let weak = window.as_weak();
+    window.on_term_select_update(move |tab_id: SharedString, row, col| {
+        let tid = tab_id.to_string();
+        {
+            let mut map = select_bufs.lock().unwrap();
+            let Some(buf) = map.get_mut(&tid) else {
+                return;
+            };
+            let (rows, cols) = buf.parser.screen().size();
+            let r = row.clamp(0, rows.saturating_sub(1) as i32) as u16;
+            let c = col.clamp(0, cols.saturating_sub(1) as i32) as u16;
+            if let Some((sr, sc, _, _)) = buf.sel {
+                buf.sel = Some((sr, sc, r, c));
+            }
+        }
+        if let Some(w) = weak.upgrade() {
+            rebuild_tab_display(&w, &select_bufs, &tid);
+        }
+    });
+
+    let select_bufs = bufs.clone();
+    let weak = window.as_weak();
+    window.on_term_select_end(move |tab_id: SharedString| {
+        let tid = tab_id.to_string();
+        let selected = {
+            let mut map = select_bufs.lock().unwrap();
+            let Some(buf) = map.get_mut(&tid) else {
+                return;
+            };
+            match buf.sel {
+                Some((sr, sc, er, ec)) if (sr, sc) != (er, ec) => {
+                    Some(extract_selection(&buf.displayed_text, sr, sc, er, ec))
+                }
+                _ => {
+                    buf.sel = None;
+                    None
+                }
+            }
+        };
+        if let Some(text) = selected.filter(|s| !s.is_empty()) {
+            std::thread::spawn(move || {
+                let _ = arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text));
+            });
+        }
+        if let Some(w) = weak.upgrade() {
+            rebuild_tab_display(&w, &select_bufs, &tid);
+        }
+    });
+
+    let select_bufs = bufs.clone();
+    let weak = window.as_weak();
+    window.on_term_select_autoscroll(move |tab_id: SharedString, dir| {
+        let tid = tab_id.to_string();
+        {
+            let mut map = select_bufs.lock().unwrap();
+            let Some(buf) = map.get_mut(&tid) else {
+                return;
+            };
+            if buf.parser.screen().alternate_screen() {
+                return;
+            }
+            let rows = buf.parser.screen().size().0;
+            let last = rows.saturating_sub(1);
+            let max_off = buf.history.len();
+            let Some((sr, sc, _, ec)) = buf.sel else {
+                return;
+            };
+            if dir < 0 {
+                let new_off = (buf.view_offset + 2).min(max_off);
+                let delta = new_off - buf.view_offset;
+                if delta == 0 {
+                    return;
+                }
+                buf.view_offset = new_off;
+                let nsr = ((sr as usize) + delta).min(last as usize) as u16;
+                buf.sel = Some((nsr, sc, 0, ec));
+            } else if dir > 0 {
+                let new_off = buf.view_offset.saturating_sub(2);
+                let delta = buf.view_offset - new_off;
+                if delta == 0 {
+                    return;
+                }
+                buf.view_offset = new_off;
+                let nsr = (sr as i32 - delta as i32).max(0) as u16;
+                buf.sel = Some((nsr, sc, last, ec));
+            }
+        }
+        if let Some(w) = weak.upgrade() {
+            rebuild_tab_display(&w, &select_bufs, &tid);
         }
     });
 
@@ -858,12 +1097,6 @@ fn wire_callbacks(
     window.on_sftp_delete(|_, _| {});
     window.on_sftp_view(|_, _| {});
     window.on_sftp_edit(|_, _| {});
-    window.on_paste_from_clipboard(|_| {});
-    window.on_copy_terminal_text(|_| {});
-    window.on_term_select_start(|_, _, _| {});
-    window.on_term_select_update(|_, _, _| {});
-    window.on_term_select_end(|_| {});
-    window.on_term_select_autoscroll(|_, _| {});
 }
 
 fn remove_model_row<T: Clone + 'static>(
@@ -1198,6 +1431,36 @@ fn selection_rects(sr: u16, sc: u16, er: u16, ec: u16, cols: u16) -> Vec<TermMat
     out
 }
 
+fn extract_selection(rows: &[String], sr: u16, sc: u16, er: u16, ec: u16) -> String {
+    let (sr, sc, er, ec) = norm_sel(sr, sc, er, ec);
+    let mut out = String::new();
+    for r in sr..=er {
+        let chars: Vec<char> = rows
+            .get(r as usize)
+            .map(|line| line.chars().collect())
+            .unwrap_or_default();
+        let (lo, hi) = if sr == er {
+            (sc.min(ec), sc.max(ec))
+        } else if r == sr {
+            (sc, u16::MAX)
+        } else if r == er {
+            (0, ec)
+        } else {
+            (0, u16::MAX)
+        };
+        let lo = (lo as usize).min(chars.len());
+        let hi = ((hi as usize).saturating_add(1)).min(chars.len());
+        if lo < hi {
+            let segment: String = chars[lo..hi].iter().collect();
+            out.push_str(segment.trim_end());
+        }
+        if r != er {
+            out.push('\n');
+        }
+    }
+    out
+}
+
 fn rebuild_tab_display(win: &AppWindow, bufs: &TermBuffers, tab_id: &str) {
     let data = {
         let mut map = bufs.lock().unwrap();
@@ -1271,6 +1534,18 @@ fn key_to_pty_bytes(key: &str, ctrl: bool, alt: bool, app_cursor: bool) -> Vec<u
         "\u{F72C}" => Some(b"\x1b[5~" as &[u8]),
         "\u{F72D}" => Some(b"\x1b[6~" as &[u8]),
         "\u{F728}" => Some(b"\x1b[3~" as &[u8]),
+        "\u{F704}" => Some(b"\x1bOP" as &[u8]),
+        "\u{F705}" => Some(b"\x1bOQ" as &[u8]),
+        "\u{F706}" => Some(b"\x1bOR" as &[u8]),
+        "\u{F707}" => Some(b"\x1bOS" as &[u8]),
+        "\u{F708}" => Some(b"\x1b[15~" as &[u8]),
+        "\u{F709}" => Some(b"\x1b[17~" as &[u8]),
+        "\u{F70A}" => Some(b"\x1b[18~" as &[u8]),
+        "\u{F70B}" => Some(b"\x1b[19~" as &[u8]),
+        "\u{F70C}" => Some(b"\x1b[20~" as &[u8]),
+        "\u{F70D}" => Some(b"\x1b[21~" as &[u8]),
+        "\u{F70E}" => Some(b"\x1b[23~" as &[u8]),
+        "\u{F70F}" => Some(b"\x1b[24~" as &[u8]),
         _ => None,
     };
     if let Some(seq) = special {
@@ -1318,6 +1593,29 @@ fn key_to_pty_bytes(key: &str, ctrl: bool, alt: bool, app_cursor: bool) -> Vec<u
         return bytes;
     }
     key.as_bytes().to_vec()
+}
+
+#[cfg(windows)]
+fn is_vk_back_down() -> bool {
+    #[allow(non_snake_case)]
+    extern "system" {
+        fn GetKeyState(nVirtKey: i32) -> i16;
+    }
+    const VK_BACK: i32 = 0x08;
+    unsafe { (GetKeyState(VK_BACK) as u16) & 0x8000 != 0 }
+}
+
+#[cfg(windows)]
+fn c0_letter_key_down(cp: u32) -> bool {
+    if !(0x01..=0x1a).contains(&cp) {
+        return true;
+    }
+    #[allow(non_snake_case)]
+    extern "system" {
+        fn GetKeyState(nVirtKey: i32) -> i16;
+    }
+    let vk = (cp + 0x40) as i32;
+    unsafe { (GetKeyState(vk) as u16) & 0x8000 != 0 }
 }
 
 struct BuiltScreen {
@@ -1652,5 +1950,37 @@ fn idx_to_rgb(i: u8, bold: bool) -> (u8, u8, u8) {
             let v = 8 + (i - 232) * 10;
             (v, v, v)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_terminal_keys_to_pty_bytes() {
+        assert_eq!(key_to_pty_bytes("\n", false, false, false), vec![0x0d]);
+        assert_eq!(
+            key_to_pty_bytes("\u{0008}", false, false, false),
+            vec![0x7f]
+        );
+        assert_eq!(key_to_pty_bytes("\u{F700}", false, false, false), b"\x1b[A");
+        assert_eq!(key_to_pty_bytes("\u{F700}", false, false, true), b"\x1bOA");
+        assert_eq!(
+            key_to_pty_bytes("\u{F70F}", false, false, false),
+            b"\x1b[24~"
+        );
+        assert_eq!(key_to_pty_bytes("c", true, false, false), vec![0x03]);
+        assert_eq!(key_to_pty_bytes("x", false, true, false), b"\x1bx");
+    }
+
+    #[test]
+    fn extracts_multiline_selection() {
+        let rows = vec![
+            "hello world".to_string(),
+            "middle   ".to_string(),
+            "tail".to_string(),
+        ];
+        assert_eq!(extract_selection(&rows, 0, 6, 2, 1), "world\nmiddle\nta");
     }
 }

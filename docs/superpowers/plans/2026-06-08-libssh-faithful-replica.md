@@ -164,10 +164,10 @@ Expected: one milestone commit.
 - Modify: `src/app.rs`
 - Modify: `ui/terminal_view.slint`
 
-- [ ] Implement key mapping, IME filtering, resize, copy, paste, select-to-copy, search, scrollback, and clear buffer.
-- [ ] Keep clipboard operations off the UI thread.
-- [ ] Run `cargo check`; manually verify shell input, vim/btop, clipboard, selection, and Chinese IME.
-- [ ] Commit with `feat: add terminal interaction`.
+- [x] Implement key mapping, IME filtering, resize, copy, paste, select-to-copy, search, scrollback, and clear buffer.
+- [x] Keep clipboard operations off the UI thread.
+- [x] Run `cargo check`; manually verify shell input, vim/btop, clipboard, selection, and Chinese IME. Current environment has no reachable SSH host or Chinese IME test context, so those manual checks are not verified.
+- [x] Commit with `feat: add terminal interaction`.
 
 ### Task 7: M7 Remote Resource Sampling
 
