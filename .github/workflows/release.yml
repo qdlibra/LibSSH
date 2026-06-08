@@ -1,7 +1,20 @@
 name: Release
 
+# Auto-release on version bump:
+#   * Push to main  -> if Cargo.toml's version has no matching git tag yet,
+#                       create v<version> and publish a GitHub Release.
+#                       (A plain commit that does NOT touch the version is a no-op.)
+#   * Push a v* tag -> release that tag directly (manual escape hatch / re-run).
+#   * Manual run    -> release the current Cargo.toml version if not already tagged.
+#
+# Note: the tag created here is pushed with the default GITHUB_TOKEN, and GitHub
+# deliberately does NOT re-trigger workflows for token-pushed refs, so this can
+# never loop back into itself.
+
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -9,9 +22,65 @@ on:
 permissions:
   contents: write
 
+# Serialise release runs on the same ref so two quick pushes can't race on
+# creating the same tag.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  check:
+    name: Determine release
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.decide.outputs.should_release }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Decide whether to release
+        id: decide
+        run: |
+          set -euo pipefail
+
+          # Explicit tag push -> always release that tag, never re-create it.
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+            echo "Triggered by tag push: $TAG"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Branch push / manual run -> derive the tag from the package version.
+          VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          TAG="v$VERSION"
+          echo "Cargo.toml version: $VERSION -> candidate tag $TAG"
+
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "refs/tags/$TAG"; then
+            echo "Tag $TAG already exists; version unchanged, nothing to release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "New version detected; creating and pushing $TAG"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          if ! git push origin "$TAG"; then
+            echo "Tag push failed (created concurrently?); skipping release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.name }}
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -26,6 +95,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.check.outputs.tag }}
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -42,6 +113,19 @@ jobs:
 
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
 
       - name: Build release
         run: cargo +stable build --release --locked
@@ -79,9 +163,9 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    needs: build
+    needs: [check, build]
+    if: needs.check.outputs.should_release == 'true'
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v5
@@ -91,11 +175,13 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.check.outputs.tag }}
+          REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           mapfile -t files < <(find artifacts -type f)
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${files[@]}" --clobber
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --repo "$REPO" --clobber
           else
-            gh release create "$TAG" "${files[@]}" --generate-notes --title "$TAG"
+            gh release create "$TAG" "${files[@]}" --repo "$REPO" --generate-notes --title "$TAG"
           fi
