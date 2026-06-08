@@ -1,4 +1,4 @@
-//! Minimal `~/.ssh/config` parser used to import hosts as meatshell sessions.
+//! Minimal `~/.ssh/config` parser used to import hosts as LibSSH sessions.
 
 use std::path::{Path, PathBuf};
 

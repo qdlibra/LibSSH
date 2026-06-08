@@ -17,9 +17,9 @@ fn main() {
     // Explorer, the taskbar and shortcuts. No-op on non-Windows targets.
     #[cfg(windows)]
     {
-        println!("cargo:rerun-if-changed=assets/meatshell.ico");
+        println!("cargo:rerun-if-changed=assets/LibSSH.ico");
         let mut res = winresource::WindowsResource::new();
-        res.set_icon("assets/meatshell.ico");
+        res.set_icon("assets/LibSSH.ico");
         if let Err(e) = res.compile() {
             println!("cargo:warning=failed to embed Windows icon: {e}");
         }

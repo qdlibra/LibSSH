@@ -261,9 +261,7 @@ mod tests {
         });
 
         let cfg = parse(&format!("http://127.0.0.1:{port}")).unwrap();
-        let err = connect(&cfg, "target.example", 2222)
-            .await
-            .unwrap_err();
+        let err = connect(&cfg, "target.example", 2222).await.unwrap_err();
         assert!(err.to_string().contains("response too large"));
         server.await.unwrap();
     }

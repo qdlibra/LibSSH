@@ -3,6 +3,40 @@
 version = 3
 
 [[package]]
+name = "LibSSH"
+version = "0.2.3"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "async-trait",
+ "base64",
+ "chrono",
+ "directories",
+ "futures",
+ "i-slint-backend-winit",
+ "rand 0.8.6",
+ "rfd",
+ "russh",
+ "russh-keys",
+ "russh-sftp",
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "ssh-key",
+ "sysinfo",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-socks",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "vt100",
+ "winresource",
+ "zeroize",
+]
+
+[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3209,40 +3243,6 @@ name = "md5"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
-
-[[package]]
-name = "meatshell"
-version = "0.2.3"
-dependencies = [
- "anyhow",
- "arboard",
- "async-trait",
- "base64",
- "chrono",
- "directories",
- "futures",
- "i-slint-backend-winit",
- "rand 0.8.6",
- "rfd",
- "russh",
- "russh-keys",
- "russh-sftp",
- "serde",
- "serde_json",
- "slint",
- "slint-build",
- "ssh-key",
- "sysinfo",
- "thiserror 1.0.69",
- "tokio",
- "tokio-socks",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "vt100",
- "winresource",
- "zeroize",
-]
 
 [[package]]
 name = "memchr"

@@ -166,7 +166,7 @@ impl ConfigStore {
     }
 
     fn config_path() -> Result<PathBuf> {
-        let dirs = ProjectDirs::from("dev", "meatshell", "meatshell")
+        let dirs = ProjectDirs::from("dev", "LibSSH", "LibSSH")
             .context("could not determine user config directory")?;
         Ok(dirs.config_dir().join("sessions.json"))
     }
@@ -232,10 +232,8 @@ mod tests {
     use std::fs;
 
     fn test_path(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "meatshell-config-test-{}-{name}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("LibSSH-config-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir.join("sessions.json")

@@ -1,4 +1,4 @@
-# meatshell
+# LibSSH
 
 Faithful Rust + Slint replica scaffold for the LibSSH project.
 

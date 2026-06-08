@@ -4,7 +4,7 @@ Date: 2026-06-08
 
 ## Goal
 
-Build the project in `/Library/Data/project/LibSSH` from an empty workspace into a faithful Rust + Slint replica of the `meatshell` SSH/SFTP desktop client described in the Obsidian knowledge base at `Project_Doc/LibSSH`.
+Build the project in `/Library/Data/project/LibSSH` from an empty workspace into a faithful Rust + Slint replica of the `LibSSH` SSH/SFTP desktop client described in the Obsidian knowledge base at `Project_Doc/LibSSH`.
 
 The first phase is strict replication. Optional improvements and hardening from `12-APPENDIX-tech-debt.md` are deferred until the full replica passes the documented acceptance checklist.
 
@@ -27,7 +27,7 @@ When behavior and improvement ideas conflict, the faithful replica keeps the cur
 
 ## Architecture
 
-The project will use Rust 2021 with Slint 1.8 and the dependency set from `02-TECH-STACK.md`. The package metadata remains aligned with the blueprint: `meatshell` version `0.2.3`, with `build.rs` compiling `ui/app.slint`, Fluent style, and bundled gettext translations from `lang`.
+The project will use Rust 2021 with Slint 1.8 and the dependency set from `02-TECH-STACK.md`. The package metadata remains aligned with the blueprint: `LibSSH` version `0.2.3`, with `build.rs` compiling `ui/app.slint`, Fluent style, and bundled gettext translations from `lang`.
 
 The module structure mirrors the blueprint:
 

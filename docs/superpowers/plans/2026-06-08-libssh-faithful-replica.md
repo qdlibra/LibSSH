@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build `/Library/Data/project/LibSSH` into the faithful Rust + Slint `meatshell` replica specified by the Obsidian `Project_Doc/LibSSH` blueprint.
+**Goal:** Build `/Library/Data/project/LibSSH` into the faithful Rust + Slint `LibSSH` replica specified by the Obsidian `Project_Doc/LibSSH` blueprint.
 
 **Architecture:** Implement in blueprint milestones M0-M11. Keep `app.rs` as the Slint bridge/coordinator, backend modules focused by responsibility, and terminal parsing in `app.rs` rather than `ssh.rs`. Phase 1 preserves current behavior and defers the hardening items from `12-APPENDIX-tech-debt.md`.
 
@@ -24,7 +24,7 @@
 - Create `src/ssh.rs`: SSH shell worker and event protocol.
 - Create `src/sftp.rs`: SFTP worker and file operations.
 - Create `ui/*.slint`: Slint components from the blueprint.
-- Create `lang/zh/LC_MESSAGES/meatshell.po` and `lang/en/LC_MESSAGES/meatshell.po`: bundled translations.
+- Create `lang/zh/LC_MESSAGES/LibSSH.po` and `lang/en/LC_MESSAGES/LibSSH.po`: bundled translations.
 - Create `assets/` and `.github/workflows/` in M10.
 
 ## Current Execution Mode
@@ -42,8 +42,8 @@ The user asked to begin implementation now. Execute inline in this thread. Subag
 - Create: `src/app.rs`
 - Create: `ui/app.slint`
 - Create: `ui/theme.slint`
-- Create: `lang/zh/LC_MESSAGES/meatshell.po`
-- Create: `lang/en/LC_MESSAGES/meatshell.po`
+- Create: `lang/zh/LC_MESSAGES/LibSSH.po`
+- Create: `lang/en/LC_MESSAGES/LibSSH.po`
 - Modify: `README.md`
 
 - [x] **Step 1: Write Cargo and build files**
@@ -52,7 +52,7 @@ Create `Cargo.toml` from `02-TECH-STACK.md` with all dependencies, Windows build
 
 - [x] **Step 2: Write the minimal Slint UI**
 
-Create `ui/theme.slint` with the blueprint color/type/geometry tokens. Create a minimal exported `AppWindow` in `ui/app.slint` with title `meatshell`, default size `1200x760`, minimum size `960x600`, dark root background, and one centered placeholder text.
+Create `ui/theme.slint` with the blueprint color/type/geometry tokens. Create a minimal exported `AppWindow` in `ui/app.slint` with title `LibSSH`, default size `1200x760`, minimum size `960x600`, dark root background, and one centered placeholder text.
 
 - [x] **Step 3: Write Rust entry files**
 
@@ -60,7 +60,7 @@ Create `src/main.rs` with `windows_subsystem` release attr, tracing subscriber s
 
 - [x] **Step 4: Add gettext placeholders**
 
-Create minimal `.po` files for `zh` and `en` with headers for package `meatshell`. Keep msgids English.
+Create minimal `.po` files for `zh` and `en` with headers for package `LibSSH`. Keep msgids English.
 
 - [x] **Step 5: Run compilation check**
 
@@ -70,7 +70,7 @@ Expected: build succeeds. New dependency downloads are acceptable.
 - [x] **Step 6: Run the app**
 
 Run: `cargo run`
-Expected: a dark `meatshell` window opens at the M0 dimensions and closes without an error. If GUI display is unavailable in the environment, document that `cargo check` passed and `cargo run` could not be visually verified.
+Expected: a dark `LibSSH` window opens at the M0 dimensions and closes without an error. If GUI display is unavailable in the environment, document that `cargo check` passed and `cargo run` could not be visually verified.
 
 - [x] **Step 7: Commit M0**
 
@@ -90,8 +90,8 @@ Expected: one milestone commit.
 - Create: `src/i18n.rs`
 - Modify: `src/main.rs`
 - Modify: `src/app.rs`
-- Modify: `lang/zh/LC_MESSAGES/meatshell.po`
-- Modify: `lang/en/LC_MESSAGES/meatshell.po`
+- Modify: `lang/zh/LC_MESSAGES/LibSSH.po`
+- Modify: `lang/en/LC_MESSAGES/LibSSH.po`
 
 - [x] Implement `Secret`, `AuthMethod`, `Session`, `ConfigFile`, and `ConfigStore` exactly from `04-DATA-MODEL.md` and `05-BACKEND-core.md`.
 - [x] Add tests for config round trip, missing optional fields, broken JSON backup, and language defaults.
