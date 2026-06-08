@@ -18,10 +18,6 @@ impl Secret {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
 }
 
 impl Drop for Secret {
@@ -313,7 +309,7 @@ mod tests {
         let loaded = ConfigStore::load_at(path).unwrap();
         let session = loaded.get("session-1").unwrap();
 
-        assert!(session.password.is_empty());
+        assert!(session.password.as_str().is_empty());
         assert_eq!(session.private_key_path, "");
         assert_eq!(session.proxy, "");
         assert_eq!(session.last_used, None);
