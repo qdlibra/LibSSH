@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod i18n;
+mod sftp;
 mod ssh;
 mod ssh_config;
 mod system;

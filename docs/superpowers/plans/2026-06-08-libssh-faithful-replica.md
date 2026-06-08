@@ -190,12 +190,12 @@ Expected: one milestone commit.
 - Modify: `ui/sftp_panel.slint`
 - Modify: `ui/terminal_view.slint`
 
-- [ ] Implement `SftpCommand`, `SftpHandle`, `RemoteEntry`, `RemoteTreeNode`, connection, home resolution, list, tree, download, upload, delete, open temp, and edit watcher.
-- [ ] Wire SFTP events into `TerminalState` and transfer manager.
-- [ ] Implement OSC7 follow with 500 ms debounce and permanent manual-nav stop.
-- [ ] Add Windows drop-zone upload behavior; keep non-Windows behavior as documented.
-- [ ] Run `cargo check`; manually verify SFTP flows on a reachable host.
-- [ ] Commit with `feat: add SFTP file management`.
+- [x] Implement `SftpCommand`, `SftpHandle`, `RemoteEntry`, `RemoteTreeNode`, connection, home resolution, list, tree, download, upload, delete, open temp, and edit watcher.
+- [x] Wire SFTP events into `TerminalState` and transfer manager.
+- [x] Implement OSC7 follow with 500 ms debounce and permanent manual-nav stop.
+- [x] Add Windows drop-zone upload behavior; keep non-Windows behavior as documented.
+- [x] Run `cargo check`; manually verify SFTP flows on a reachable host. Automated checks pass; manual SFTP flows are not verified because this environment has no reachable SSH/SFTP host configured.
+- [x] Commit with `feat: add SFTP file management`.
 
 ### Task 9: M9 Proxy Support
 
