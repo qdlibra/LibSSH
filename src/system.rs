@@ -80,7 +80,10 @@ impl SystemSampler {
         let rx_total: u64 = self.nets.iter().map(|(_, d)| d.total_received()).sum();
         let tx_total: u64 = self.nets.iter().map(|(_, d)| d.total_transmitted()).sum();
         let now = std::time::Instant::now();
-        let elapsed = now.duration_since(self.last_instant).as_secs_f64().max(0.001);
+        let elapsed = now
+            .duration_since(self.last_instant)
+            .as_secs_f64()
+            .max(0.001);
         let rx_delta = rx_total.saturating_sub(self.last_rx_total);
         let tx_delta = tx_total.saturating_sub(self.last_tx_total);
         self.last_rx_total = rx_total;

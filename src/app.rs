@@ -1,16 +1,67 @@
 slint::include_modules!();
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
-use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use tokio::runtime::Runtime;
 
 use crate::config::{AuthMethod, ConfigStore, Secret, Session};
+use crate::ssh::{spawn_session, SessionEvent, SessionHandle};
 use crate::system::{format_bytes_per_sec, SystemSampler, SystemSnapshot};
 
 const NET_HISTORY_LEN: usize = 60;
+const MAX_HISTORY: usize = 100_000;
+
+type TermBuffers = Arc<Mutex<HashMap<String, TermBuffer>>>;
+type TabStatuses = Arc<Mutex<HashMap<String, TabStatus>>>;
+type LocalSnap = Arc<Mutex<SystemSnapshot>>;
+type NetHist = Arc<Mutex<Vec<f32>>>;
+type Line = (String, Vec<HistSpan>);
+
+struct AppModels {
+    sessions: Rc<VecModel<SessionInfo>>,
+    tabs: Rc<VecModel<TabInfo>>,
+    terminals: Rc<VecModel<TerminalState>>,
+}
+
+struct TermBuffer {
+    parser: vt100::Parser,
+    find_query: String,
+    sel: Option<(u16, u16, u16, u16)>,
+    history: Vec<Line>,
+    prev: Vec<Line>,
+    view_offset: usize,
+    displayed_text: Vec<String>,
+    csi_state: CsiState,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum CsiState {
+    Normal,
+    Esc,
+    Csi,
+}
+
+#[derive(Clone, Default)]
+struct TabStatus {
+    host: String,
+    state: u8,
+    cpu: f32,
+    mem_used_kib: u64,
+    mem_total_kib: u64,
+    swap_used_kib: u64,
+    swap_total_kib: u64,
+    net: Vec<(String, u64, u64)>,
+    selected_iface: String,
+    net_hist: Vec<f32>,
+    disks: Vec<(String, u64, u64)>,
+}
 
 pub fn run() -> anyhow::Result<()> {
+    let runtime = Arc::new(Runtime::new()?);
     let store = Rc::new(RefCell::new(ConfigStore::load()?));
     crate::i18n::set_language(store.borrow().language());
 
@@ -18,15 +69,34 @@ pub fn run() -> anyhow::Result<()> {
     crate::i18n::apply_to_slint();
     window.set_lang_en(crate::i18n::is_en());
 
-    let sessions_model = initialise_models(&window, &store.borrow());
-    wire_callbacks(&window, store, sessions_model);
-    start_local_sampler(&window);
+    let models = initialise_models(&window, &store.borrow());
+    let handles: Rc<RefCell<HashMap<String, SessionHandle>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let bufs: TermBuffers = Arc::new(Mutex::new(HashMap::new()));
+    let tab_statuses: TabStatuses = Arc::new(Mutex::new(HashMap::new()));
+    let local_snap: LocalSnap = Arc::new(Mutex::new(SystemSnapshot::default()));
+    let local_net_hist: NetHist = Arc::new(Mutex::new(vec![0.0; NET_HISTORY_LEN]));
+    let last_term_size: Arc<Mutex<(u32, u32)>> = Arc::new(Mutex::new((80, 24)));
+
+    wire_callbacks(
+        &window,
+        store,
+        models,
+        runtime,
+        handles,
+        bufs,
+        tab_statuses.clone(),
+        local_snap.clone(),
+        local_net_hist.clone(),
+        last_term_size,
+    );
+    start_local_sampler(&window, tab_statuses, local_snap, local_net_hist);
 
     window.run()?;
     Ok(())
 }
 
-fn initialise_models(window: &AppWindow, store: &ConfigStore) -> Rc<VecModel<SessionInfo>> {
+fn initialise_models(window: &AppWindow, store: &ConfigStore) -> AppModels {
     let sessions_model: Rc<VecModel<SessionInfo>> = Rc::new(VecModel::default());
     sync_sessions_to_model(store, &sessions_model);
     window.set_sessions(ModelRc::from(sessions_model.clone()));
@@ -38,10 +108,11 @@ fn initialise_models(window: &AppWindow, store: &ConfigStore) -> Rc<VecModel<Ses
         kind: "welcome".into(),
         connected: false,
     });
-    window.set_tabs(ModelRc::from(tabs_model));
+    window.set_tabs(ModelRc::from(tabs_model.clone()));
     window.set_active_tab_id("welcome".into());
 
-    window.set_terminals(empty_model::<TerminalState>());
+    let terminals_model: Rc<VecModel<TerminalState>> = Rc::new(VecModel::default());
+    window.set_terminals(ModelRc::from(terminals_model.clone()));
     window.set_transfers(empty_model::<TransferInfo>());
     window.set_about_libs(ModelRc::from(Rc::new(VecModel::from(vec![
         "Rust".into(),
@@ -72,57 +143,167 @@ fn initialise_models(window: &AppWindow, store: &ConfigStore) -> Rc<VecModel<Ses
     window.set_net_selected("".into());
     window.set_net_show_selector(false);
     window.set_download_dir(store.download_dir().into());
-    sessions_model
+    AppModels {
+        sessions: sessions_model,
+        tabs: tabs_model,
+        terminals: terminals_model,
+    }
 }
 
-fn start_local_sampler(window: &AppWindow) {
+fn start_local_sampler(
+    window: &AppWindow,
+    statuses: TabStatuses,
+    local_snap: LocalSnap,
+    local_net_hist: NetHist,
+) {
     let sampler = Rc::new(RefCell::new(SystemSampler::new()));
-    let net_hist = Rc::new(RefCell::new(vec![0.0; NET_HISTORY_LEN]));
 
     {
         let snap = sampler.borrow_mut().sample();
-        push_ring(&mut net_hist.borrow_mut(), snap.net_bytes_per_sec as f32);
-        apply_local_snapshot(window, &snap, &net_hist.borrow());
+        if let Ok(mut local) = local_snap.lock() {
+            *local = snap;
+        }
+        if let Ok(mut hist) = local_net_hist.lock() {
+            push_ring(
+                &mut hist,
+                local_snap.lock().unwrap().net_bytes_per_sec as f32,
+            );
+        }
+        refresh_sidebar(window, &statuses, &local_snap, &local_net_hist);
     }
 
     let weak = window.as_weak();
     let tick_sampler = sampler.clone();
-    let tick_hist = net_hist.clone();
+    let tick_statuses = statuses.clone();
+    let tick_local = local_snap.clone();
+    let tick_hist = local_net_hist.clone();
     let timer = Timer::default();
-    timer.start(TimerMode::Repeated, SystemSampler::recommended_interval(), move || {
-        let snap = tick_sampler.borrow_mut().sample();
-        {
-            let mut hist = tick_hist.borrow_mut();
-            push_ring(&mut hist, snap.net_bytes_per_sec as f32);
-        }
-        if let Some(w) = weak.upgrade() {
-            apply_local_snapshot(&w, &snap, &tick_hist.borrow());
-        }
-    });
+    timer.start(
+        TimerMode::Repeated,
+        SystemSampler::recommended_interval(),
+        move || {
+            let snap = tick_sampler.borrow_mut().sample();
+            if let Ok(mut hist) = tick_hist.lock() {
+                push_ring(&mut hist, snap.net_bytes_per_sec as f32);
+            }
+            if let Ok(mut local) = tick_local.lock() {
+                *local = snap;
+            }
+            if let Some(w) = weak.upgrade() {
+                refresh_sidebar(&w, &tick_statuses, &tick_local, &tick_hist);
+            }
+        },
+    );
     Box::leak(Box::new(timer));
 }
 
-fn apply_local_snapshot(window: &AppWindow, snap: &SystemSnapshot, net_hist: &[f32]) {
-    window.set_connection_state(crate::i18n::t("未连接", "Not connected").into());
-    window.set_resource_title(crate::i18n::t("本机资源", "Local resources").into());
-    window.set_conn_state(0);
-    window.set_cpu_percent(snap.cpu_percent);
-    window.set_mem_percent(snap.mem_percent);
-    window.set_swap_percent(snap.swap_percent);
-    window.set_mem_detail(format!("{}M/{}M", snap.mem_used_mib, snap.mem_total_mib).into());
-    window.set_swap_detail(format!("{}M/{}M", snap.swap_used_mib, snap.swap_total_mib).into());
+fn refresh_sidebar(
+    window: &AppWindow,
+    statuses: &TabStatuses,
+    local_snap: &LocalSnap,
+    local_net_hist: &NetHist,
+) {
+    let snap = local_snap.lock().map(|s| s.clone()).unwrap_or_default();
+    let hist = local_net_hist
+        .lock()
+        .map(|h| h.clone())
+        .unwrap_or_else(|_| vec![0.0; NET_HISTORY_LEN]);
 
-    window.set_net_top_up(format_bytes_per_sec(snap.net_tx_per_sec).into());
-    window.set_net_top_down(format_bytes_per_sec(snap.net_rx_per_sec).into());
     window.set_net_bot_up(format_bytes_per_sec(snap.net_tx_per_sec).into());
     window.set_net_bot_down(format_bytes_per_sec(snap.net_rx_per_sec).into());
-    let hist = normalized_model(net_hist);
-    window.set_net_top_history(hist.clone());
-    window.set_net_bot_history(hist);
+    window.set_net_bot_history(normalized_model(&hist));
+
+    let active = window.get_active_tab_id().to_string();
+    let status = if active == "welcome" {
+        None
+    } else {
+        statuses.lock().ok().and_then(|s| s.get(&active).cloned())
+    };
+
+    match status {
+        Some(st) if st.state == 1 => {
+            window.set_connection_state(
+                format!("{} {}", crate::i18n::t("已连接", "Connected"), st.host).into(),
+            );
+            window.set_resource_title(crate::i18n::t("服务器资源", "Server resources").into());
+            window.set_conn_state(1);
+            window.set_cpu_percent(st.cpu);
+            let mem_percent = if st.mem_total_kib > 0 {
+                st.mem_used_kib as f32 / st.mem_total_kib as f32
+            } else {
+                0.0
+            };
+            let swap_percent = if st.swap_total_kib > 0 {
+                st.swap_used_kib as f32 / st.swap_total_kib as f32
+            } else {
+                0.0
+            };
+            window.set_mem_percent(mem_percent);
+            window.set_swap_percent(swap_percent);
+            window.set_mem_detail(
+                format!("{}M/{}M", st.mem_used_kib / 1024, st.mem_total_kib / 1024).into(),
+            );
+            window.set_swap_detail(
+                format!("{}M/{}M", st.swap_used_kib / 1024, st.swap_total_kib / 1024).into(),
+            );
+            let (iface, rx, tx) = selected_iface(&st);
+            window.set_net_top_up(format_bytes_per_sec(tx).into());
+            window.set_net_top_down(format_bytes_per_sec(rx).into());
+            window.set_net_top_history(normalized_model(&st.net_hist));
+            window.set_net_ifaces(ModelRc::from(Rc::new(VecModel::from(
+                st.net
+                    .iter()
+                    .map(|n| SharedString::from(n.0.as_str()))
+                    .collect::<Vec<_>>(),
+            ))));
+            window.set_net_selected(iface.into());
+            window.set_net_show_selector(!st.net.is_empty());
+            window.set_disks(disk_model(&st.disks));
+        }
+        Some(st) => {
+            let state = if st.state == 2 {
+                crate::i18n::t("已断开", "Disconnected")
+            } else {
+                crate::i18n::t("连接中", "Connecting")
+            };
+            window.set_connection_state(format!("{state} {}", st.host).into());
+            window.set_resource_title(crate::i18n::t("服务器资源", "Server resources").into());
+            window.set_conn_state(st.state as i32);
+            clear_resource_stats(window);
+            set_top_local(window, &snap, &hist);
+        }
+        None => {
+            window.set_connection_state(crate::i18n::t("未连接", "Not connected").into());
+            window.set_resource_title(crate::i18n::t("本机资源", "Local resources").into());
+            window.set_conn_state(0);
+            window.set_cpu_percent(snap.cpu_percent);
+            window.set_mem_percent(snap.mem_percent);
+            window.set_swap_percent(snap.swap_percent);
+            window.set_mem_detail(format!("{}M/{}M", snap.mem_used_mib, snap.mem_total_mib).into());
+            window.set_swap_detail(
+                format!("{}M/{}M", snap.swap_used_mib, snap.swap_total_mib).into(),
+            );
+            set_top_local(window, &snap, &hist);
+        }
+    }
+}
+
+fn set_top_local(window: &AppWindow, snap: &SystemSnapshot, net_hist: &[f32]) {
+    window.set_net_top_up(format_bytes_per_sec(snap.net_tx_per_sec).into());
+    window.set_net_top_down(format_bytes_per_sec(snap.net_rx_per_sec).into());
+    window.set_net_top_history(normalized_model(net_hist));
     window.set_net_ifaces(empty_model::<SharedString>());
     window.set_net_selected("".into());
     window.set_net_show_selector(false);
     window.set_disks(disk_model(&snap.disks));
+}
+
+fn clear_resource_stats(window: &AppWindow) {
+    window.set_cpu_percent(0.0);
+    window.set_mem_percent(0.0);
+    window.set_swap_percent(0.0);
+    window.set_mem_detail("0M/0M".into());
+    window.set_swap_detail("0M/0M".into());
 }
 
 fn push_ring(values: &mut Vec<f32>, value: f32) {
@@ -198,8 +379,19 @@ fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<SessionInfo>) {
 fn wire_callbacks(
     window: &AppWindow,
     store: Rc<RefCell<ConfigStore>>,
-    sessions_model: Rc<VecModel<SessionInfo>>,
+    models: AppModels,
+    runtime: Arc<Runtime>,
+    handles: Rc<RefCell<HashMap<String, SessionHandle>>>,
+    bufs: TermBuffers,
+    tab_statuses: TabStatuses,
+    local_snap: LocalSnap,
+    local_net_hist: NetHist,
+    last_term_size: Arc<Mutex<(u32, u32)>>,
 ) {
+    let sessions_model = models.sessions.clone();
+    let tabs_model = models.tabs.clone();
+    let terminals_model = models.terminals.clone();
+
     let weak = window.as_weak();
     window.on_new_tab_clicked(move || {
         if let Some(w) = weak.upgrade() {
@@ -363,7 +555,11 @@ fn wire_callbacks(
                 draft.name.to_string()
             },
             host: draft.host.to_string(),
-            port: if draft.port <= 0 { 22 } else { draft.port as u16 },
+            port: if draft.port <= 0 {
+                22
+            } else {
+                draft.port as u16
+            },
             user: draft.user.to_string(),
             auth: AuthMethod::from_str(&draft.auth.to_string()),
             password,
@@ -386,8 +582,8 @@ fn wire_callbacks(
 
     let weak = window.as_weak();
     window.on_session_dialog_pick_key(move || {
-        let mut dialog =
-            rfd::FileDialog::new().set_title(crate::i18n::t("选择私钥文件", "Choose private key file"));
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(crate::i18n::t("选择私钥文件", "Choose private key file"));
         if let Some(home) = directories::UserDirs::new().map(|u| u.home_dir().join(".ssh")) {
             if home.is_dir() {
                 dialog = dialog.set_directory(home);
@@ -398,6 +594,238 @@ fn wire_callbacks(
             if let Some(w) = weak.upgrade() {
                 w.set_dialog_key_path(path.into());
             }
+        }
+    });
+
+    let weak = window.as_weak();
+    let connect_store = store.clone();
+    let connect_tabs = tabs_model.clone();
+    let connect_terminals = terminals_model.clone();
+    let connect_handles = handles.clone();
+    let connect_bufs = bufs.clone();
+    let connect_runtime = runtime.clone();
+    let connect_statuses = tab_statuses.clone();
+    let connect_local = local_snap.clone();
+    let connect_hist = local_net_hist.clone();
+    let connect_last_size = last_term_size.clone();
+    window.on_connect_session(move |id: SharedString| {
+        let id = id.to_string();
+        let session = match connect_store.borrow().get(&id).cloned() {
+            Some(s) => s,
+            None => return,
+        };
+        let tab_id = format!("term-{}", uuid::Uuid::new_v4());
+        connect_statuses.lock().unwrap().insert(
+            tab_id.clone(),
+            TabStatus {
+                host: format!("{}@{}", session.user, session.host),
+                state: 0,
+                ..Default::default()
+            },
+        );
+        connect_tabs.push(TabInfo {
+            id: tab_id.clone().into(),
+            title: session.name.clone().into(),
+            kind: "terminal".into(),
+            connected: false,
+        });
+        connect_terminals.push(TerminalState {
+            id: tab_id.clone().into(),
+            status: crate::i18n::t("连接中...", "Connecting...").into(),
+            spans: empty_model::<TermSpan>(),
+            cursor_row: 0,
+            cursor_col: 0,
+            rows_used: 0,
+            is_alt_screen: false,
+            find_matches: empty_model::<TermMatch>(),
+            selection: empty_model::<TermMatch>(),
+            sftp_path: "/".into(),
+            sftp_entries: empty_model::<SftpEntry>(),
+            sftp_status: crate::i18n::t("SFTP 连接中...", "SFTP connecting...").into(),
+            sftp_loading: true,
+            sftp_tree_nodes: empty_model::<SftpTreeNode>(),
+        });
+        connect_bufs.lock().unwrap().insert(
+            tab_id.clone(),
+            TermBuffer {
+                parser: vt100::Parser::new(24, 80, 5000),
+                find_query: String::new(),
+                sel: None,
+                history: Vec::new(),
+                prev: Vec::new(),
+                view_offset: 0,
+                displayed_text: Vec::new(),
+                csi_state: CsiState::Normal,
+            },
+        );
+        if let Some(w) = weak.upgrade() {
+            w.set_active_tab_id(tab_id.clone().into());
+            refresh_sidebar(&w, &connect_statuses, &connect_local, &connect_hist);
+        }
+
+        let (initial_cols, initial_rows) = *connect_last_size.lock().unwrap();
+        let (handle, mut rx) = spawn_session(
+            connect_runtime.handle(),
+            tab_id.clone(),
+            session,
+            initial_cols,
+            initial_rows,
+        );
+        connect_handles.borrow_mut().insert(tab_id.clone(), handle);
+
+        let weak_events = weak.clone();
+        let bufs_events = connect_bufs.clone();
+        let statuses_events = connect_statuses.clone();
+        let local_events = connect_local.clone();
+        let hist_events = connect_hist.clone();
+        std::thread::spawn(move || {
+            while let Some(event) = rx.blocking_recv() {
+                let weak_evt = weak_events.clone();
+                let tab_evt = tab_id.clone();
+                let bufs_evt = bufs_events.clone();
+                let statuses_evt = statuses_events.clone();
+                let local_evt = local_events.clone();
+                let hist_evt = hist_events.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = weak_evt.upgrade() {
+                        apply_session_event_to_window(
+                            &w,
+                            &tab_evt,
+                            event,
+                            &bufs_evt,
+                            &statuses_evt,
+                            &local_evt,
+                            &hist_evt,
+                        );
+                    }
+                });
+            }
+        });
+    });
+
+    let weak = window.as_weak();
+    let close_tabs = tabs_model.clone();
+    let close_terminals = terminals_model.clone();
+    let close_handles = handles.clone();
+    let close_bufs = bufs.clone();
+    let close_statuses = tab_statuses.clone();
+    window.on_tab_closed(move |id: SharedString| {
+        let id = id.to_string();
+        if id == "welcome" {
+            return;
+        }
+        if let Some(handle) = close_handles.borrow_mut().remove(&id) {
+            handle.close();
+        }
+        close_bufs.lock().unwrap().remove(&id);
+        close_statuses.lock().unwrap().remove(&id);
+        remove_model_row(&close_tabs, &id, |row| row.id.as_str().to_string());
+        remove_model_row(&close_terminals, &id, |row| row.id.as_str().to_string());
+        if let Some(w) = weak.upgrade() {
+            if w.get_active_tab_id().as_str() == id {
+                w.set_active_tab_id("welcome".into());
+            }
+        }
+    });
+
+    window.on_tab_selected(|_| {});
+
+    let select_statuses = tab_statuses.clone();
+    let select_local = local_snap.clone();
+    let select_hist = local_net_hist.clone();
+    let weak = window.as_weak();
+    window.on_refresh_sidebar(move || {
+        if let Some(w) = weak.upgrade() {
+            refresh_sidebar(&w, &select_statuses, &select_local, &select_hist);
+        }
+    });
+
+    let iface_statuses = tab_statuses.clone();
+    let iface_local = local_snap.clone();
+    let iface_hist = local_net_hist.clone();
+    let weak = window.as_weak();
+    window.on_select_net_iface(move |iface: SharedString| {
+        if let Some(w) = weak.upgrade() {
+            let active = w.get_active_tab_id().to_string();
+            if let Some(st) = iface_statuses.lock().unwrap().get_mut(&active) {
+                st.selected_iface = iface.to_string();
+                st.net_hist = vec![0.0; NET_HISTORY_LEN];
+            }
+            refresh_sidebar(&w, &iface_statuses, &iface_local, &iface_hist);
+        }
+    });
+
+    let resize_handles = handles.clone();
+    let resize_bufs = bufs.clone();
+    let resize_last_size = last_term_size.clone();
+    window.on_terminal_resize(move |tab_id: SharedString, cols_f: f32, rows_f: f32| {
+        let cols = (cols_f as u32).max(10);
+        let rows = (rows_f as u32).max(5);
+        *resize_last_size.lock().unwrap() = (cols, rows);
+        if let Some(handle) = resize_handles.borrow().get(tab_id.as_str()) {
+            handle.resize(cols, rows);
+        }
+        if let Some(buf) = resize_bufs.lock().unwrap().get_mut(tab_id.as_str()) {
+            buf.parser.set_size(rows as u16, cols as u16);
+        }
+    });
+
+    let send_handles = handles.clone();
+    let send_bufs = bufs.clone();
+    window.on_send_key(
+        move |tab_id: SharedString, key: SharedString, ctrl, alt, _shift| {
+            let app_cursor = send_bufs
+                .lock()
+                .ok()
+                .and_then(|m| {
+                    m.get(tab_id.as_str())
+                        .map(|b| b.parser.screen().application_cursor())
+                })
+                .unwrap_or(false);
+            let bytes = key_to_pty_bytes(key.as_str(), ctrl, alt, app_cursor);
+            if !bytes.is_empty() {
+                if let Some(handle) = send_handles.borrow().get(tab_id.as_str()) {
+                    handle.send_raw(bytes);
+                }
+            }
+        },
+    );
+
+    let clear_bufs = bufs.clone();
+    window.on_clear_terminal(move |tab_id: SharedString| {
+        if let Some(buf) = clear_bufs.lock().unwrap().get_mut(tab_id.as_str()) {
+            let (rows, cols) = buf.parser.screen().size();
+            buf.parser = vt100::Parser::new(rows, cols, 5000);
+            buf.history.clear();
+            buf.prev.clear();
+            buf.view_offset = 0;
+            buf.displayed_text.clear();
+            buf.find_query.clear();
+            buf.sel = None;
+        }
+    });
+
+    let find_bufs = bufs.clone();
+    let weak = window.as_weak();
+    window.on_find_query_changed(move |tab_id: SharedString, query: SharedString| {
+        if let Some(buf) = find_bufs.lock().unwrap().get_mut(tab_id.as_str()) {
+            buf.find_query = query.to_string();
+        }
+        if let Some(w) = weak.upgrade() {
+            rebuild_tab_display(&w, &find_bufs, tab_id.as_str());
+        }
+    });
+
+    let scroll_bufs = bufs.clone();
+    let weak = window.as_weak();
+    window.on_terminal_scroll(move |tab_id: SharedString, delta| {
+        if let Some(buf) = scroll_bufs.lock().unwrap().get_mut(tab_id.as_str()) {
+            let max_off = buf.history.len() as i64;
+            let cur = buf.view_offset as i64;
+            buf.view_offset = (cur + delta as i64).clamp(0, max_off) as usize;
+        }
+        if let Some(w) = weak.upgrade() {
+            rebuild_tab_display(&w, &scroll_bufs, tab_id.as_str());
         }
     });
 
@@ -419,16 +847,9 @@ fn wire_callbacks(
         }
     });
 
-    window.on_tab_selected(|_| {});
-    window.on_tab_closed(|_| {});
-    window.on_connect_session(|_| {});
-    window.on_refresh_sidebar(|| {});
-    window.on_select_net_iface(|_| {});
     window.on_pick_download_dir(|| {});
     window.on_open_download_dir(|| {});
     window.on_clear_transfers(|| {});
-    window.on_send_key(|_, _, _, _, _| {});
-    window.on_terminal_resize(|_, _, _| {});
     window.on_sftp_navigate(|_, _| {});
     window.on_sftp_download(|_, _| {});
     window.on_sftp_upload_clicked(|_, _| {});
@@ -439,11 +860,797 @@ fn wire_callbacks(
     window.on_sftp_edit(|_, _| {});
     window.on_paste_from_clipboard(|_| {});
     window.on_copy_terminal_text(|_| {});
-    window.on_clear_terminal(|_| {});
-    window.on_find_query_changed(|_, _| {});
-    window.on_terminal_scroll(|_, _| {});
     window.on_term_select_start(|_, _, _| {});
     window.on_term_select_update(|_, _, _| {});
     window.on_term_select_end(|_| {});
     window.on_term_select_autoscroll(|_, _| {});
+}
+
+fn remove_model_row<T: Clone + 'static>(
+    model: &VecModel<T>,
+    id: &str,
+    get_id: impl Fn(T) -> String,
+) {
+    let mut idx = None;
+    for i in 0..model.row_count() {
+        if model
+            .row_data(i)
+            .map(|row| get_id(row) == id)
+            .unwrap_or(false)
+        {
+            idx = Some(i);
+            break;
+        }
+    }
+    if let Some(i) = idx {
+        model.remove(i);
+    }
+}
+
+fn selected_iface(st: &TabStatus) -> (String, u64, u64) {
+    if !st.selected_iface.is_empty() {
+        if let Some(e) = st.net.iter().find(|e| e.0 == st.selected_iface) {
+            return e.clone();
+        }
+    }
+    st.net.first().cloned().unwrap_or_default()
+}
+
+fn apply_session_event_to_window(
+    win: &AppWindow,
+    tab_id: &str,
+    event: SessionEvent,
+    bufs: &TermBuffers,
+    statuses: &TabStatuses,
+    local: &LocalSnap,
+    local_net_hist: &NetHist,
+) {
+    let tabs_rc = win.get_tabs();
+    let terminals_rc = win.get_terminals();
+    let Some(tabs) = tabs_rc.as_any().downcast_ref::<VecModel<TabInfo>>() else {
+        return;
+    };
+    let Some(terminals) = terminals_rc
+        .as_any()
+        .downcast_ref::<VecModel<TerminalState>>()
+    else {
+        return;
+    };
+
+    let update_terminal = |mutator: &dyn Fn(&mut TerminalState)| {
+        for i in 0..terminals.row_count() {
+            if let Some(mut row) = terminals.row_data(i) {
+                if row.id.as_str() == tab_id {
+                    mutator(&mut row);
+                    terminals.set_row_data(i, row);
+                    break;
+                }
+            }
+        }
+    };
+    let update_tab = |mutator: &dyn Fn(&mut TabInfo)| {
+        for i in 0..tabs.row_count() {
+            if let Some(mut row) = tabs.row_data(i) {
+                if row.id.as_str() == tab_id {
+                    mutator(&mut row);
+                    tabs.set_row_data(i, row);
+                    break;
+                }
+            }
+        }
+    };
+
+    match event {
+        SessionEvent::Status(status) => {
+            update_terminal(&|t| t.status = status.clone().into());
+        }
+        SessionEvent::Output(chunk) => {
+            let built = {
+                let mut map = bufs.lock().unwrap();
+                if let Some(buf) = map.get_mut(tab_id) {
+                    buf.ingest(chunk.as_bytes());
+                    let cols = buf.parser.screen().size().1;
+                    let b = buf.render();
+                    let matches = compute_find_matches(&buf.displayed_text, &buf.find_query);
+                    let sel = match buf.sel {
+                        Some((sr, sc, er, ec)) => selection_rects(sr, sc, er, ec, cols),
+                        None => Vec::new(),
+                    };
+                    Some((b, matches, sel))
+                } else {
+                    None
+                }
+            };
+            if let Some((b, matches, sel)) = built {
+                let spans_model: ModelRc<TermSpan> =
+                    ModelRc::from(Rc::new(VecModel::from(b.spans)));
+                let matches_model: ModelRc<TermMatch> =
+                    ModelRc::from(Rc::new(VecModel::from(matches)));
+                let selection_model: ModelRc<TermMatch> =
+                    ModelRc::from(Rc::new(VecModel::from(sel)));
+                let (cur_row, cur_col, rows_used, is_alt) =
+                    (b.cursor_row, b.cursor_col, b.rows_used, b.is_alt);
+                update_terminal(&|t| {
+                    t.spans = spans_model.clone();
+                    t.cursor_row = cur_row;
+                    t.cursor_col = cur_col;
+                    t.rows_used = rows_used;
+                    t.is_alt_screen = is_alt;
+                    t.find_matches = matches_model.clone();
+                    t.selection = selection_model.clone();
+                });
+            }
+        }
+        SessionEvent::Connected => {
+            update_tab(&|t| t.connected = true);
+            update_terminal(&|t| t.status = crate::i18n::t("已连接", "Connected").into());
+            if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
+                st.state = 1;
+            }
+            if win.get_active_tab_id().as_str() == tab_id {
+                refresh_sidebar(win, statuses, local, local_net_hist);
+            }
+        }
+        SessionEvent::Closed(reason) => {
+            update_tab(&|t| t.connected = false);
+            update_terminal(&|t| {
+                t.status = format!("{} - {reason}", crate::i18n::t("已断开", "Disconnected")).into()
+            });
+            if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
+                st.state = 2;
+            }
+            if win.get_active_tab_id().as_str() == tab_id {
+                refresh_sidebar(win, statuses, local, local_net_hist);
+            }
+        }
+        SessionEvent::ResourceStats {
+            cpu_percent,
+            mem_used_kib,
+            mem_total_kib,
+            swap_used_kib,
+            swap_total_kib,
+            net,
+            disks,
+        } => {
+            if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
+                st.cpu = cpu_percent;
+                st.mem_used_kib = mem_used_kib;
+                st.mem_total_kib = mem_total_kib;
+                st.swap_used_kib = swap_used_kib;
+                st.swap_total_kib = swap_total_kib;
+                st.net = net;
+                st.disks = disks;
+                if st.state != 1 {
+                    st.state = 1;
+                }
+                let (_, rx, tx) = selected_iface(st);
+                push_ring(&mut st.net_hist, (rx + tx) as f32);
+            }
+            if win.get_active_tab_id().as_str() == tab_id {
+                refresh_sidebar(win, statuses, local, local_net_hist);
+            }
+        }
+        SessionEvent::CwdChanged(path) => {
+            update_terminal(&|t| {
+                t.sftp_path = path.clone().into();
+                t.sftp_loading = true;
+            });
+        }
+        SessionEvent::SftpEntries { path, entries } => {
+            let rows: Vec<SftpEntry> = entries
+                .iter()
+                .map(|e| SftpEntry {
+                    name: e.name.clone().into(),
+                    full_path: e.full_path.clone().into(),
+                    is_dir: e.is_dir,
+                    size: if e.is_dir {
+                        "".into()
+                    } else {
+                        crate::ssh::format_size(e.size).into()
+                    },
+                    modified: crate::ssh::format_mtime(e.modified).into(),
+                })
+                .collect();
+            let model = ModelRc::from(Rc::new(VecModel::from(rows)));
+            update_terminal(&|t| {
+                t.sftp_path = path.clone().into();
+                t.sftp_entries = model.clone();
+                t.sftp_loading = false;
+            });
+        }
+        SessionEvent::SftpStatus(msg) => {
+            update_terminal(&|t| t.sftp_status = msg.clone().into());
+        }
+        SessionEvent::SftpTreeUpdate(nodes) => {
+            let rows: Vec<SftpTreeNode> = nodes
+                .iter()
+                .map(|n| SftpTreeNode {
+                    path: n.path.clone().into(),
+                    name: n.name.clone().into(),
+                    depth: n.depth as i32,
+                    expanded: n.expanded,
+                    has_children: n.has_children,
+                })
+                .collect();
+            let model = ModelRc::from(Rc::new(VecModel::from(rows)));
+            update_terminal(&|t| t.sftp_tree_nodes = model.clone());
+        }
+        SessionEvent::SftpTransfer {
+            id,
+            name,
+            is_upload,
+            transferred,
+            total,
+            state,
+            msg: _,
+        } => {
+            let detail = match state {
+                2 => crate::i18n::t("失败", "Failed").to_string(),
+                1 => crate::i18n::t("已完成", "Done").to_string(),
+                _ if total > 0 => format!(
+                    "{}/{}",
+                    crate::ssh::format_size(transferred),
+                    crate::ssh::format_size(total)
+                ),
+                _ => crate::ssh::format_size(transferred),
+            };
+            let percent = if state == 1 {
+                1.0
+            } else if total > 0 {
+                (transferred as f32 / total as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let rec = TransferInfo {
+                id: id.clone().into(),
+                name: name.into(),
+                detail: detail.into(),
+                percent,
+                state: state as i32,
+                is_upload,
+            };
+            if let Some(model) = win
+                .get_transfers()
+                .as_any()
+                .downcast_ref::<VecModel<TransferInfo>>()
+            {
+                let mut found = None;
+                for i in 0..model.row_count() {
+                    if let Some(row) = model.row_data(i) {
+                        if row.id.as_str() == id.as_str() {
+                            found = Some(i);
+                            break;
+                        }
+                    }
+                }
+                match found {
+                    Some(i) => model.set_row_data(i, rec),
+                    None => model.insert(0, rec),
+                }
+            }
+        }
+    }
+}
+
+fn compute_find_matches(rows: &[String], query: &str) -> Vec<TermMatch> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let q: Vec<char> = query.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let mut out = Vec::new();
+    for (r, line) in rows.iter().enumerate() {
+        let lower: Vec<char> = line.chars().map(|c| c.to_ascii_lowercase()).collect();
+        let mut i = 0usize;
+        while i + q.len() <= lower.len() {
+            if lower[i..i + q.len()] == q[..] {
+                out.push(TermMatch {
+                    row: r as i32,
+                    col: i as i32,
+                    len: q.len() as i32,
+                });
+                i += q.len();
+            } else {
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn norm_sel(sr: u16, sc: u16, er: u16, ec: u16) -> (u16, u16, u16, u16) {
+    if (sr, sc) <= (er, ec) {
+        (sr, sc, er, ec)
+    } else {
+        (er, ec, sr, sc)
+    }
+}
+
+fn selection_rects(sr: u16, sc: u16, er: u16, ec: u16, cols: u16) -> Vec<TermMatch> {
+    let (sr, sc, er, ec) = norm_sel(sr, sc, er, ec);
+    let mut out = Vec::new();
+    if sr == er {
+        let lo = sc.min(ec);
+        let hi = sc.max(ec);
+        out.push(TermMatch {
+            row: sr as i32,
+            col: lo as i32,
+            len: (hi - lo + 1) as i32,
+        });
+    } else {
+        out.push(TermMatch {
+            row: sr as i32,
+            col: sc as i32,
+            len: (cols - sc) as i32,
+        });
+        for r in (sr + 1)..er {
+            out.push(TermMatch {
+                row: r as i32,
+                col: 0,
+                len: cols as i32,
+            });
+        }
+        out.push(TermMatch {
+            row: er as i32,
+            col: 0,
+            len: (ec + 1) as i32,
+        });
+    }
+    out
+}
+
+fn rebuild_tab_display(win: &AppWindow, bufs: &TermBuffers, tab_id: &str) {
+    let data = {
+        let mut map = bufs.lock().unwrap();
+        let Some(buf) = map.get_mut(tab_id) else {
+            return;
+        };
+        let cols = buf.parser.screen().size().1;
+        let b = buf.render();
+        let matches = compute_find_matches(&buf.displayed_text, &buf.find_query);
+        let sel = match buf.sel {
+            Some((sr, sc, er, ec)) => selection_rects(sr, sc, er, ec, cols),
+            None => Vec::new(),
+        };
+        (b, matches, sel)
+    };
+    let (b, matches, sel) = data;
+    let spans = ModelRc::from(Rc::new(VecModel::from(b.spans)));
+    let fm = ModelRc::from(Rc::new(VecModel::from(matches)));
+    let sm = ModelRc::from(Rc::new(VecModel::from(sel)));
+    set_terminal_row(win, tab_id, move |row| {
+        row.spans = spans.clone();
+        row.cursor_row = b.cursor_row;
+        row.cursor_col = b.cursor_col;
+        row.rows_used = b.rows_used;
+        row.is_alt_screen = b.is_alt;
+        row.find_matches = fm.clone();
+        row.selection = sm.clone();
+    });
+}
+
+fn set_terminal_row(win: &AppWindow, tab_id: &str, mutator: impl Fn(&mut TerminalState)) {
+    let terminals = win.get_terminals();
+    let Some(model) = terminals.as_any().downcast_ref::<VecModel<TerminalState>>() else {
+        return;
+    };
+    for i in 0..model.row_count() {
+        if let Some(mut row) = model.row_data(i) {
+            if row.id.as_str() == tab_id {
+                mutator(&mut row);
+                model.set_row_data(i, row);
+                break;
+            }
+        }
+    }
+}
+
+fn key_to_pty_bytes(key: &str, ctrl: bool, alt: bool, app_cursor: bool) -> Vec<u8> {
+    let special: Option<&[u8]> = match key {
+        "\u{F700}" => Some(if app_cursor {
+            b"\x1bOA" as &[u8]
+        } else {
+            b"\x1b[A"
+        }),
+        "\u{F701}" => Some(if app_cursor {
+            b"\x1bOB" as &[u8]
+        } else {
+            b"\x1b[B"
+        }),
+        "\u{F702}" => Some(if app_cursor {
+            b"\x1bOD" as &[u8]
+        } else {
+            b"\x1b[D"
+        }),
+        "\u{F703}" => Some(if app_cursor {
+            b"\x1bOC" as &[u8]
+        } else {
+            b"\x1b[C"
+        }),
+        "\u{F729}" => Some(b"\x1b[H" as &[u8]),
+        "\u{F72B}" => Some(b"\x1b[F" as &[u8]),
+        "\u{F72C}" => Some(b"\x1b[5~" as &[u8]),
+        "\u{F72D}" => Some(b"\x1b[6~" as &[u8]),
+        "\u{F728}" => Some(b"\x1b[3~" as &[u8]),
+        _ => None,
+    };
+    if let Some(seq) = special {
+        return seq.to_vec();
+    }
+    if key == "\u{0008}" {
+        return vec![0x7f];
+    }
+    if key == "\n" && !ctrl && !alt {
+        return vec![0x0d];
+    }
+    if key.is_empty() {
+        return vec![];
+    }
+    if ctrl {
+        if let Some(c) = key.chars().next() {
+            let cp = c as u32;
+            if key.chars().count() == 1 && (0x01..=0x1f).contains(&cp) {
+                return vec![cp as u8];
+            }
+            if key.chars().count() == 1 {
+                let upper = c.to_ascii_uppercase() as u8;
+                let ctrl_char = match upper {
+                    b'A'..=b'Z' => Some(upper - b'A' + 1),
+                    b'[' => Some(0x1b),
+                    b'\\' => Some(0x1c),
+                    b']' => Some(0x1d),
+                    b'^' => Some(0x1e),
+                    b'_' => Some(0x1f),
+                    b'@' => Some(0x00),
+                    _ => None,
+                };
+                if let Some(byte) = ctrl_char {
+                    return vec![byte];
+                }
+            }
+        }
+    }
+    if key.chars().any(|c| (0xE000..=0xF8FF).contains(&(c as u32))) {
+        return vec![];
+    }
+    if alt && !ctrl {
+        let mut bytes = vec![0x1b];
+        bytes.extend_from_slice(key.as_bytes());
+        return bytes;
+    }
+    key.as_bytes().to_vec()
+}
+
+struct BuiltScreen {
+    spans: Vec<TermSpan>,
+    cursor_row: i32,
+    cursor_col: i32,
+    rows_used: i32,
+    is_alt: bool,
+}
+
+#[derive(Clone)]
+struct HistSpan {
+    text: String,
+    fg: slint::Color,
+    bg: slint::Color,
+    bold: bool,
+    col: i32,
+    cells: i32,
+}
+
+fn cell_attrs(
+    screen: &vt100::Screen,
+    r: u16,
+    c: u16,
+) -> (String, vt100::Color, vt100::Color, bool) {
+    match screen.cell(r, c) {
+        Some(cell) => {
+            let (mut fg, mut bg) = (cell.fgcolor(), cell.bgcolor());
+            if cell.inverse() {
+                std::mem::swap(&mut fg, &mut bg);
+            }
+            let s = cell.contents();
+            let s = if s.is_empty() { " ".to_string() } else { s };
+            (s, fg, bg, cell.bold())
+        }
+        None => (
+            " ".to_string(),
+            vt100::Color::Default,
+            vt100::Color::Default,
+            false,
+        ),
+    }
+}
+
+fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
+    let mut plain = String::with_capacity(cols as usize);
+    let mut runs = Vec::new();
+    let mut c = 0u16;
+    while c < cols {
+        let (s, fg, bg, bold) = cell_attrs(screen, r, c);
+        let start_col = c;
+        let mut text = s.clone();
+        plain.push_str(&s);
+        c += 1;
+        while c < cols {
+            let (cs, cfg, cbg, cbold) = cell_attrs(screen, r, c);
+            if cfg != fg || cbg != bg || cbold != bold {
+                break;
+            }
+            plain.push_str(&cs);
+            text.push_str(&cs);
+            c += 1;
+        }
+        let cells = (c - start_col) as i32;
+        let is_blank = text.chars().all(|ch| ch == ' ');
+        let bg_default = matches!(bg, vt100::Color::Default);
+        if is_blank && bg_default {
+            continue;
+        }
+        runs.push(HistSpan {
+            text,
+            fg: vt_color_to_slint(fg, bold),
+            bg: vt_bg_to_slint(bg),
+            bold,
+            col: start_col as i32,
+            cells,
+        });
+    }
+    (plain, runs)
+}
+
+fn detect_scroll(prev: &[Line], curr: &[Line]) -> usize {
+    let mut best_k = 0usize;
+    let mut best_len = 0usize;
+    for k in 0..prev.len() {
+        let mut p = 0usize;
+        while k + p < prev.len() && p < curr.len() && prev[k + p].0 == curr[p].0 {
+            p += 1;
+        }
+        if p > best_len {
+            best_len = p;
+            best_k = k;
+        }
+    }
+    best_k
+}
+
+impl TermBuffer {
+    fn ingest(&mut self, raw: &[u8]) {
+        let bytes = self.rewrite_hvp(raw);
+        let rows = self.parser.screen().size().0 as usize;
+        let batch_lines = (rows / 2).max(1);
+        let mut start = 0usize;
+        let mut nl = 0usize;
+        for i in 0..bytes.len() {
+            if bytes[i] == b'\n' {
+                nl += 1;
+                if nl >= batch_lines {
+                    self.ingest_chunk(&bytes[start..=i]);
+                    start = i + 1;
+                    nl = 0;
+                }
+            }
+        }
+        if start < bytes.len() {
+            self.ingest_chunk(&bytes[start..]);
+        }
+    }
+
+    fn rewrite_hvp(&mut self, input: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(input.len());
+        for &b in input {
+            match self.csi_state {
+                CsiState::Normal => {
+                    if b == 0x1b {
+                        self.csi_state = CsiState::Esc;
+                    }
+                    out.push(b);
+                }
+                CsiState::Esc => {
+                    if b == b'[' {
+                        self.csi_state = CsiState::Csi;
+                    } else {
+                        self.csi_state = if b == 0x1b {
+                            CsiState::Esc
+                        } else {
+                            CsiState::Normal
+                        };
+                    }
+                    out.push(b);
+                }
+                CsiState::Csi => {
+                    if (0x40..=0x7e).contains(&b) {
+                        out.push(if b == b'f' { b'H' } else { b });
+                        self.csi_state = CsiState::Normal;
+                    } else {
+                        out.push(b);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn ingest_chunk(&mut self, bytes: &[u8]) {
+        let has_cursor_home = bytes.windows(3).any(|w| w == b"\x1b[H");
+        let has_erase_display =
+            bytes.windows(4).any(|w| w == b"\x1b[2J") || bytes.windows(3).any(|w| w == b"\x1b[J");
+        let is_fullscreen_refresh = has_cursor_home && has_erase_display;
+
+        self.parser.process(bytes);
+        let (is_alt, rows, cols) = {
+            let s = self.parser.screen();
+            let (r, c) = s.size();
+            (s.alternate_screen(), r, c)
+        };
+        if is_alt || is_fullscreen_refresh {
+            self.view_offset = 0;
+            self.prev.clear();
+            return;
+        }
+        let curr: Vec<Line> = {
+            let s = self.parser.screen();
+            (0..rows).map(|r| build_row(s, r, cols)).collect()
+        };
+        if !self.prev.is_empty() {
+            let k = detect_scroll(&self.prev, &curr);
+            for line in self.prev.iter().take(k) {
+                self.history.push(line.clone());
+            }
+            if self.history.len() > MAX_HISTORY {
+                let drop = self.history.len() - MAX_HISTORY;
+                self.history.drain(0..drop);
+            }
+        }
+        self.prev = curr;
+    }
+
+    fn render(&mut self) -> BuiltScreen {
+        let (is_alt, rows, cols, cur_row, cur_col) = {
+            let s = self.parser.screen();
+            let (r, c) = s.size();
+            let (cr, cc) = s.cursor_position();
+            (s.alternate_screen(), r, c, cr, cc)
+        };
+
+        if is_alt || self.view_offset == 0 {
+            let mut spans = Vec::new();
+            let mut displayed = Vec::with_capacity(rows as usize);
+            let mut last_content = 0i32;
+            let s = self.parser.screen();
+            for r in 0..rows {
+                let (plain, runs) = build_row(s, r, cols);
+                if !runs.is_empty() {
+                    last_content = r as i32;
+                }
+                for hs in runs {
+                    spans.push(TermSpan {
+                        text: hs.text.into(),
+                        fg: hs.fg,
+                        bg: hs.bg,
+                        bold: hs.bold,
+                        row: r as i32,
+                        col: hs.col,
+                        cells: hs.cells,
+                    });
+                }
+                displayed.push(plain.trim_end().to_string());
+            }
+            self.displayed_text = displayed;
+            return BuiltScreen {
+                spans,
+                cursor_row: cur_row as i32,
+                cursor_col: cur_col as i32,
+                rows_used: if is_alt {
+                    rows as i32
+                } else {
+                    last_content + 1
+                },
+                is_alt,
+            };
+        }
+
+        let live: Vec<Line> = {
+            let s = self.parser.screen();
+            (0..rows).map(|r| build_row(s, r, cols)).collect()
+        };
+        let live_used = live
+            .iter()
+            .rposition(|(_, r)| !r.is_empty())
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let hist_len = self.history.len();
+        let combined_len = hist_len + live_used;
+        let win = rows as usize;
+        let start = combined_len.saturating_sub(win + self.view_offset);
+        let end = (start + win).min(combined_len);
+        let mut spans = Vec::new();
+        let mut displayed = Vec::with_capacity(win);
+        for (d, idx) in (start..end).enumerate() {
+            let line = if idx < hist_len {
+                &self.history[idx]
+            } else {
+                &live[idx - hist_len]
+            };
+            for hs in &line.1 {
+                spans.push(TermSpan {
+                    text: hs.text.clone().into(),
+                    fg: hs.fg,
+                    bg: hs.bg,
+                    bold: hs.bold,
+                    row: d as i32,
+                    col: hs.col,
+                    cells: hs.cells,
+                });
+            }
+            displayed.push(line.0.trim_end().to_string());
+        }
+        while displayed.len() < win {
+            displayed.push(String::new());
+        }
+        self.displayed_text = displayed;
+        BuiltScreen {
+            spans,
+            cursor_row: -1,
+            cursor_col: 0,
+            rows_used: win as i32,
+            is_alt: false,
+        }
+    }
+}
+
+const ANSI16: [(u8, u8, u8); 16] = [
+    (0x00, 0x00, 0x00),
+    (0xcd, 0x31, 0x31),
+    (0x0d, 0xbc, 0x79),
+    (0xe5, 0xe5, 0x10),
+    (0x24, 0x72, 0xc8),
+    (0xbc, 0x3f, 0xbc),
+    (0x11, 0xa8, 0xcd),
+    (0xe5, 0xe5, 0xe5),
+    (0x66, 0x66, 0x66),
+    (0xf1, 0x4c, 0x4c),
+    (0x23, 0xd1, 0x8b),
+    (0xf5, 0xf5, 0x43),
+    (0x3b, 0x8e, 0xea),
+    (0xd6, 0x70, 0xd6),
+    (0x29, 0xb8, 0xdb),
+    (0xff, 0xff, 0xff),
+];
+
+fn vt_color_to_slint(color: vt100::Color, bold: bool) -> slint::Color {
+    let (r, g, b) = match color {
+        vt100::Color::Default => (0xd4, 0xd4, 0xd4),
+        vt100::Color::Idx(i) => idx_to_rgb(i, bold),
+        vt100::Color::Rgb(r, g, b) => (r, g, b),
+    };
+    slint::Color::from_rgb_u8(r, g, b)
+}
+
+fn vt_bg_to_slint(color: vt100::Color) -> slint::Color {
+    match color {
+        vt100::Color::Default => slint::Color::from_argb_u8(0, 0, 0, 0),
+        vt100::Color::Idx(i) => {
+            let (r, g, b) = idx_to_rgb(i, false);
+            slint::Color::from_rgb_u8(r, g, b)
+        }
+        vt100::Color::Rgb(r, g, b) => slint::Color::from_rgb_u8(r, g, b),
+    }
+}
+
+fn idx_to_rgb(i: u8, bold: bool) -> (u8, u8, u8) {
+    let i = if bold && i < 8 { i + 8 } else { i };
+    match i {
+        0..=15 => ANSI16[i as usize],
+        16..=231 => {
+            let n = i - 16;
+            let to = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
+            (to(n / 36), to((n % 36) / 6), to(n % 6))
+        }
+        _ => {
+            let v = 8 + (i - 232) * 10;
+            (v, v, v)
+        }
+    }
 }

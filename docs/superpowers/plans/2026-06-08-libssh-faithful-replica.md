@@ -152,11 +152,11 @@ Expected: one milestone commit.
 - Modify: `src/app.rs`
 - Modify: `ui/terminal_view.slint`
 
-- [ ] Implement `SessionCommand`, `SessionEvent`, `SessionHandle`, SSH connection, auth, PTY, shell, resize, close, and output event pump.
-- [ ] Implement `TermBuffer`, HVP rewrite, scrollback, alternate-screen handling, VT color conversion, and `TermSpan` rendering in `app.rs`.
-- [ ] Wire connect-session to create independent terminal tabs.
-- [ ] Run `cargo check`; manually verify with a reachable SSH host if available.
-- [ ] Commit with `feat: add SSH terminal rendering`.
+- [x] Implement `SessionCommand`, `SessionEvent`, `SessionHandle`, SSH connection, auth, PTY, shell, resize, close, and output event pump.
+- [x] Implement `TermBuffer`, HVP rewrite, scrollback, alternate-screen handling, VT color conversion, and `TermSpan` rendering in `app.rs`.
+- [x] Wire connect-session to create independent terminal tabs.
+- [x] Run `cargo check`; manually verify with a reachable SSH host if available. Current environment has no reachable SSH host configured, so manual SSH login is not verified.
+- [x] Commit with `feat: add SSH terminal rendering`.
 
 ### Task 6: M6 Terminal Interaction
 

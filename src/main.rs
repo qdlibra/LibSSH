@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod i18n;
+mod ssh;
 mod ssh_config;
 mod system;
 
@@ -12,7 +13,9 @@ fn main() -> anyhow::Result<()> {
     // Keep IME enabled. Later milestones route composition through the hidden
     // Slint input in terminal_view.slint so Chinese input remains available.
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     app::run()

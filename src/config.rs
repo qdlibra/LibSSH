@@ -47,9 +47,7 @@ impl Serialize for Secret {
 }
 
 impl<'de> Deserialize<'de> for Secret {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        d: D,
-    ) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         Ok(Secret(String::deserialize(d)?))
     }
 }
