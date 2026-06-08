@@ -1,0 +1,20 @@
+import { Theme } from "theme.slint";
+
+export component AppWindow inherits Window {
+    title: "meatshell";
+    min-width: 960px;
+    min-height: 600px;
+    background: Theme.bg-root;
+
+    Rectangle {
+        background: Theme.bg-root;
+
+        Text {
+            text: "meatshell";
+            color: Theme.text-primary;
+            font-size: Theme.fs-xl;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
