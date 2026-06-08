@@ -189,7 +189,7 @@ component NetGraph inherits VerticalLayout {
 }
 
 component ThemeModeButton inherits Rectangle {
-    in property <string> label;
+    in property <string> icon;
     in property <int> value;
     callback clicked();
 
@@ -209,13 +209,12 @@ component ThemeModeButton inherits Rectangle {
     }
 
     Text {
-        text: root.label;
+        text: root.icon;
+        font-family: "Material Icons";
         color: Theme.mode == root.value ? Theme.accent : Theme.text-secondary;
-        font-size: Theme.fs-xs;
-        font-weight: Theme.mode == root.value ? 600 : 400;
+        font-size: 16px;
         horizontal-alignment: center;
         vertical-alignment: center;
-        overflow: elide;
     }
 }
 
@@ -472,7 +471,7 @@ export component Sidebar inherits Rectangle {
             height: 24px;
             spacing: 4px;
             ThemeModeButton {
-                label: @tr("高亮");
+                icon: "\u{E430}"; // wb_sunny
                 value: 1;
                 clicked => {
                     Theme.mode = 1;
@@ -480,7 +479,7 @@ export component Sidebar inherits Rectangle {
                 }
             }
             ThemeModeButton {
-                label: @tr("暗夜");
+                icon: "\u{E3A8}"; // brightness_3
                 value: 2;
                 clicked => {
                     Theme.mode = 2;
@@ -488,7 +487,7 @@ export component Sidebar inherits Rectangle {
                 }
             }
             ThemeModeButton {
-                label: @tr("系统");
+                icon: "\u{E30C}"; // desktop_windows
                 value: 0;
                 clicked => {
                     Theme.mode = 0;
