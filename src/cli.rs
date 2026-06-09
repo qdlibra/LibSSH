@@ -236,23 +236,47 @@ fn redact_sensitive_line(line: &str) -> String {
 }
 
 fn generated_skill_markdown() -> &'static str {
-    r#"# LibSSH Safe CLI
+    r#"---
+name: libssh
+description: Use when the user wants to inspect or run a command on a remote server already saved in LibSSH (check load average, disk usage, service status, or logs on a host they name such as prod). Triggers on operating a known remote machine through LibSSH instead of a raw ssh connection.
+---
 
-Use this skill only for SSH tasks through the local `LibSSH skill` CLI. Never ask the user for passwords, private keys, proxy credentials, API tokens, or other secrets. The CLI reads saved sessions locally and redacts sensitive output before returning data to the AI tool.
+# LibSSH Safe CLI
 
-## Commands
+Operate the user's saved remote servers **only** through the local `LibSSH skill` CLI. It reads saved sessions locally, enforces an allow/deny policy, and redacts secrets before any output reaches you. Do not open your own `ssh` connection, do not read `~/.ssh/*` or app config, and do not reach for another server tool — route everything through this CLI.
 
-- List non-secret sessions: `LibSSH skill sessions`
-- Check whether a command is allowed: `LibSSH skill check --command "uptime"`
-- Run an allowed command: `LibSSH skill run --session "<id-or-name>" --command "uptime"`
+## When to use
 
-## Guardrails
+The user asks you to check, monitor, or run a command on a remote host they refer to by name (for example "prod" or "staging") that is managed in LibSSH.
 
-- The CLI is disabled until the user runs `LibSSH skill policy enable`.
-- Remote commands are denied until added with `LibSSH skill policy allow "<command-prefix>"`.
-- Deny rules configured with `LibSSH skill policy deny "<command-prefix>"` override allow rules.
-- Built-in destructive and secret-prone command prefixes such as `rm`, `dd`, `mkfs`, `shutdown`, `reboot`, `passwd`, `sudo`, `su`, `env`, `printenv`, secret-manager CLIs, and `kubectl ... secret` are always blocked.
-- Treat all command output as potentially sensitive; rely on the CLI redaction and do not request broader allow rules than needed.
+## Workflow
+
+1. Discover hosts: `LibSSH skill sessions` (already redacted — no secrets).
+2. Pre-check: `LibSSH skill check --command "uptime"` confirms the policy allows it.
+3. Run: `LibSSH skill run --session "<id-or-name>" --command "uptime"` returns redacted JSON.
+
+Never ask the user for passwords, private keys, proxy credentials, or API tokens — credentials stay inside LibSSH.
+
+## Quick reference
+
+| Goal | Command |
+| --- | --- |
+| List saved hosts | `LibSSH skill sessions` |
+| Show current policy | `LibSSH skill policy show` |
+| Check a command | `LibSSH skill check --command "<cmd>"` |
+| Run a command | `LibSSH skill run --session "<id-or-name>" --command "<cmd>"` |
+
+## When a command is blocked
+
+The CLI is **disabled by default** and denies every command until the user opts in. If `check`/`run` reports disabled, not-allowed, or blocked:
+
+- Tell the user what to run, and let them run it: `LibSSH skill policy enable`, then `LibSSH skill policy allow "<command-prefix>"`.
+- **Never work around a block.** If `rm` is blocked, do not substitute `find -delete`, `truncate`, `: >`, or any equivalent. Do not escalate with `sudo`/`su` or rewrite a command to dodge the policy. Report the block and stop.
+- Destructive and secret-reading prefixes (`rm`, `dd`, `mkfs`, `shutdown`, `reboot`, `passwd`, `sudo`, `su`, `env`, `printenv`, secret managers, `kubectl ... secret`) are always blocked by design. Surface them for the user to handle manually in the LibSSH GUI.
+
+## Output handling
+
+Treat all command output as potentially sensitive. Rely on the CLI's redaction, do not echo back anything that still looks like a credential, and never request broader allow rules than the task needs.
 "#
 }
 
@@ -355,5 +379,24 @@ mod tests {
         assert!(!redacted.contains("abc123"));
         assert!(!redacted.contains("prod.pem"));
         assert!(redacted.contains("normal line"));
+    }
+
+    #[test]
+    fn export_emits_valid_skill_frontmatter() {
+        let md = generated_skill_markdown();
+        assert!(
+            md.starts_with("---\n"),
+            "exported SKILL.md must open with YAML frontmatter"
+        );
+        let body_after_open = &md[4..];
+        let close = body_after_open
+            .find("\n---\n")
+            .expect("frontmatter must be closed with a --- line");
+        let front = &body_after_open[..close];
+        assert!(front.contains("name:"), "frontmatter needs a name field");
+        assert!(
+            front.contains("description:"),
+            "frontmatter needs a description field"
+        );
     }
 }
