@@ -34,6 +34,25 @@ pub enum SftpCommand {
     Close,
 }
 
+#[derive(Debug, PartialEq)]
+pub enum EditableError {
+    TooLarge,
+    NotUtf8,
+}
+
+/// 远端文件内容是否适合在纯文本编辑器中打开。
+/// 超过 `max_bytes` 或非 UTF-8 一律拒绝，避免把二进制读进编辑器、或保存时损坏文件。
+#[allow(dead_code)] // 接线（Task 5）后移除
+pub fn check_editable(bytes: &[u8], max_bytes: usize) -> Result<String, EditableError> {
+    if bytes.len() > max_bytes {
+        return Err(EditableError::TooLarge);
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(s) => Ok(s.to_string()),
+        Err(_) => Err(EditableError::NotUtf8),
+    }
+}
+
 pub struct SftpHandle {
     pub commands: UnboundedSender<SftpCommand>,
     #[allow(dead_code)]
@@ -799,5 +818,25 @@ mod tests {
         assert_eq!(sanitize_filename("bad:name?.txt..."), "bad_name_.txt");
         assert_eq!(sanitize_filename("   "), "file");
         assert_eq!(sanitize_filename("\u{0007}"), "_");
+    }
+
+    #[test]
+    fn check_editable_accepts_small_utf8() {
+        assert_eq!(check_editable(b"hello", 1024).unwrap(), "hello");
+        assert_eq!(check_editable(b"", 1024).unwrap(), "");
+    }
+
+    #[test]
+    fn check_editable_rejects_too_large() {
+        assert!(matches!(check_editable(b"abcd", 2), Err(EditableError::TooLarge)));
+    }
+
+    #[test]
+    fn check_editable_rejects_non_utf8() {
+        // 0xFF 不是合法 UTF-8 起始字节
+        assert!(matches!(
+            check_editable(&[0xff, 0xfe, 0x00], 1024),
+            Err(EditableError::NotUtf8)
+        ));
     }
 }
