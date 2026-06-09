@@ -62,8 +62,7 @@ export component SftpPanel inherits Rectangle {
     callback refresh(string);
     callback tree-expand(string);   // toggle expand/collapse + navigate
     callback delete(string);        // remove a remote file/dir
-    callback view(string);          // download to temp + open (read)
-    callback edit(string);          // download to temp + open + auto-reupload
+    callback edit(string);          // 在应用内编辑器打开远端文件
     callback collapse-clicked();
 
     // -----------------------------------------------------------------------
@@ -313,7 +312,7 @@ export component SftpPanel inherits Rectangle {
                                 x: row.mx;
                                 y: row.my;
                                 width: 108px;
-                                height: (entry.is-dir ? 1 : 4) * 27px + 8px;
+                                height: (entry.is-dir ? 1 : 3) * 27px + 8px;
                                 Rectangle {
                                     background: Theme.bg-panel;
                                     border-radius: Theme.radius-sm;
@@ -327,10 +326,6 @@ export component SftpPanel inherits Rectangle {
                                         if !entry.is-dir : SftpMenuItem {
                                             label: @tr("Download");
                                             clicked => { root.download(entry.full-path); }
-                                        }
-                                        if !entry.is-dir : SftpMenuItem {
-                                            label: @tr("View");
-                                            clicked => { root.view(entry.full-path); }
                                         }
                                         if !entry.is-dir : SftpMenuItem {
                                             label: @tr("Edit");

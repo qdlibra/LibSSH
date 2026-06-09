@@ -97,7 +97,6 @@ export component TerminalView inherits Rectangle {
     callback sftp-refresh(string);
     callback sftp-tree-expand(string);
     callback sftp-delete(string);
-    callback sftp-view(string);
     callback sftp-edit(string);
     callback paste-from-clipboard();
     callback copy-terminal-text();
@@ -690,7 +689,6 @@ export component TerminalView inherits Rectangle {
             refresh(path)       => { root.sftp-refresh(path); }
             tree-expand(path)   => { root.sftp-tree-expand(path); }
             delete(path)        => { root.sftp-delete(path); }
-            view(path)          => { root.sftp-view(path); }
             edit(path)          => { root.sftp-edit(path); }
             collapse-clicked()  => { root.sftp-panel-collapsed = true; }
         }

@@ -1538,15 +1538,6 @@ fn wire_callbacks(
         }
     });
 
-    let view_sftp = sftp_handles.clone();
-    window.on_sftp_view(move |tab_id: SharedString, path: SharedString| {
-        if let Ok(handles) = view_sftp.lock() {
-            if let Some(handle) = handles.get(tab_id.as_str()) {
-                handle.open_temp(path.to_string(), false);
-            }
-        }
-    });
-
     let edit_sftp = sftp_handles.clone();
     window.on_sftp_edit(move |tab_id: SharedString, path: SharedString| {
         if let Ok(handles) = edit_sftp.lock() {

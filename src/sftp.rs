@@ -30,7 +30,6 @@ pub enum SftpCommand {
     Download { remote: String, local_dir: String },
     Upload { local: String, remote_dir: String },
     Delete(String),
-    OpenTemp { remote: String, edit: bool },
     ReadFile { remote: String },
     WriteFile { remote: String, content: String },
     Close,
@@ -88,10 +87,6 @@ impl SftpHandle {
         let _ = self.commands.send(SftpCommand::Delete(path));
     }
 
-    pub fn open_temp(&self, remote: String, edit: bool) {
-        let _ = self.commands.send(SftpCommand::OpenTemp { remote, edit });
-    }
-
     pub fn read_file(&self, remote: String) {
         let _ = self.commands.send(SftpCommand::ReadFile { remote });
     }
@@ -111,10 +106,9 @@ pub fn spawn_sftp(
     events: UnboundedSender<SessionEvent>,
 ) -> SftpHandle {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let self_tx = cmd_tx.clone();
     let events_err = events.clone();
     let join = runtime.spawn(async move {
-        if let Err(err) = run_sftp(session, cmd_rx, self_tx, events).await {
+        if let Err(err) = run_sftp(session, cmd_rx, events).await {
             let _ = events_err.send(SessionEvent::SftpStatus(format!(
                 "{}: {err:#}",
                 t("SFTP 错误", "SFTP error")
@@ -130,7 +124,6 @@ pub fn spawn_sftp(
 async fn run_sftp(
     session: Session,
     mut commands: UnboundedReceiver<SftpCommand>,
-    self_tx: UnboundedSender<SftpCommand>,
     events: UnboundedSender<SessionEvent>,
 ) -> Result<()> {
     let _ = events.send(SessionEvent::SftpStatus(
@@ -442,46 +435,6 @@ async fn run_sftp(
                     }
                 }
             }
-            SftpCommand::OpenTemp { remote, edit } => {
-                let filename = sanitize_filename(&base_name(&remote));
-                let tmp_dir = std::env::temp_dir().join("LibSSH");
-                let _ = tokio::fs::create_dir_all(&tmp_dir).await;
-                let local = tmp_dir.join(&filename);
-                let local_str = local.to_string_lossy().to_string();
-                let _ = events.send(SessionEvent::SftpStatus(format!(
-                    "{} {}...",
-                    t("打开", "Opening"),
-                    filename
-                )));
-                let id = Uuid::new_v4().to_string();
-                match download_impl(&sftp, &remote, &local_str, &filename, &id, &events).await {
-                    Ok(()) => {
-                        open_with_os(&local_str);
-                        let label = if edit {
-                            t("已打开编辑", "Opened for editing")
-                        } else {
-                            t("已打开", "Opened")
-                        };
-                        let _ = events
-                            .send(SessionEvent::SftpStatus(format!("{}: {}", label, filename)));
-                        if edit {
-                            spawn_edit_watcher(
-                                self_tx.clone(),
-                                local_str,
-                                remote.clone(),
-                                filename,
-                                events.clone(),
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        let _ = events.send(SessionEvent::SftpStatus(format!(
-                            "{}: {e}",
-                            t("打开失败", "Open failed")
-                        )));
-                    }
-                }
-            }
         }
     }
 
@@ -759,97 +712,6 @@ fn parent_dir(path: &str) -> String {
     }
 }
 
-#[cfg(windows)]
-fn open_with_os(path: &str) {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    #[link(name = "shell32")]
-    extern "system" {
-        fn ShellExecuteW(
-            hwnd: isize,
-            lp_operation: *const u16,
-            lp_file: *const u16,
-            lp_parameters: *const u16,
-            lp_directory: *const u16,
-            n_show_cmd: i32,
-        ) -> isize;
-    }
-    let to_wide = |s: &str| -> Vec<u16> {
-        OsStr::new(s)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect()
-    };
-    let op = to_wide("open");
-    let file = to_wide(path);
-    unsafe {
-        ShellExecuteW(
-            0,
-            op.as_ptr(),
-            file.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            1,
-        );
-    }
-}
-
-#[cfg(not(windows))]
-fn open_with_os(path: &str) {
-    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
-}
-
-fn sanitize_filename(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*' | '&' | '^' | '%' | '!' | '`'
-            | '$' | '\'' => '_',
-            c if (c as u32) < 0x20 => '_',
-            c => c,
-        })
-        .collect();
-    let trimmed = cleaned.trim_end_matches([' ', '.']);
-    if trimmed.trim().is_empty() {
-        "file".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn spawn_edit_watcher(
-    self_tx: UnboundedSender<SftpCommand>,
-    local: String,
-    remote: String,
-    filename: String,
-    events: UnboundedSender<SessionEvent>,
-) {
-    let remote_dir = parent_dir(&remote);
-    tokio::spawn(async move {
-        let mtime = |p: &str| std::fs::metadata(p).ok().and_then(|m| m.modified().ok());
-        let mut last = mtime(&local);
-        for _ in 0..1200 {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            if self_tx.is_closed() {
-                break;
-            }
-            let cur = mtime(&local);
-            if cur.is_some() && cur != last {
-                last = cur;
-                let _ = self_tx.send(SftpCommand::Upload {
-                    local: local.clone(),
-                    remote_dir: remote_dir.clone(),
-                });
-                let _ = events.send(SessionEvent::SftpStatus(format!(
-                    "{}: {}",
-                    t("已上传修改", "Re-uploaded changes"),
-                    filename
-                )));
-            }
-        }
-    });
-}
-
 struct SftpClientHandler;
 
 #[async_trait]
@@ -892,15 +754,6 @@ mod tests {
         assert_eq!(parent_dir("/file"), "/");
         assert_eq!(parent_dir("/"), "/");
         assert_eq!(parent_dir("relative"), "/");
-    }
-
-    #[test]
-    fn sanitize_filename_replaces_local_path_and_shell_danger() {
-        assert_eq!(sanitize_filename("normal name.txt"), "normal name.txt");
-        assert_eq!(sanitize_filename("../a&b|c>.sh"), ".._a_b_c_.sh");
-        assert_eq!(sanitize_filename("bad:name?.txt..."), "bad_name_.txt");
-        assert_eq!(sanitize_filename("   "), "file");
-        assert_eq!(sanitize_filename("\u{0007}"), "_");
     }
 
     #[test]

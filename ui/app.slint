@@ -170,7 +170,6 @@ export component AppWindow inherits Window {
     // Toggle expand/collapse of a tree node (also navigates to that directory).
     callback sftp-tree-expand(string /* tab-id */, string /* path */);
     callback sftp-delete(string /* tab-id */, string /* path */);
-    callback sftp-view(string /* tab-id */, string /* path */);
     callback sftp-edit(string /* tab-id */, string /* path */);
 
     // --- Clipboard callbacks ----------------------------------------------
@@ -279,7 +278,6 @@ export component AppWindow inherits Window {
                     sftp-refresh(path) => { root.sftp-refresh(term.id, path); }
                     sftp-tree-expand(path) => { root.sftp-tree-expand(term.id, path); }
                     sftp-delete(path) => { root.sftp-delete(term.id, path); }
-                    sftp-view(path) => { root.sftp-view(term.id, path); }
                     sftp-edit(path) => { root.sftp-edit(term.id, path); }
                     paste-from-clipboard() => { root.paste-from-clipboard(term.id); }
                     copy-terminal-text() => { root.copy-terminal-text(term.id); }
