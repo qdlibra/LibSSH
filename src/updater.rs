@@ -273,6 +273,43 @@ pub async fn download_and_verify(
     Ok(dest)
 }
 
+/// 从可执行文件路径向上找到 .app bundle 目录。
+fn find_app_bundle(exe: &Path) -> Option<PathBuf> {
+    exe.ancestors()
+        .find(|a| a.extension().and_then(|e| e.to_str()) == Some("app"))
+        .map(|a| a.to_path_buf())
+}
+
+/// 用单引号包裹路径供 /bin/sh 使用，转义内部单引号。
+fn sh_squote(p: &Path) -> String {
+    format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"))
+}
+
+/// 生成"等旧进程退出 → 覆盖 .app → 解隔离 → 卸载 → 启动新版 → 自删"的脚本。
+fn build_helper_script(
+    pid: u32,
+    mount_app: &Path,
+    target_app: &Path,
+    mount_point: &Path,
+    script_path: &Path,
+) -> String {
+    format!(
+        "#!/bin/sh\n\
+         # LibSSH 自动更新辅助脚本（旧进程退出后接管覆盖与重启）。\n\
+         while kill -0 {pid} 2>/dev/null; do sleep 0.2; done\n\
+         /usr/bin/ditto {src} {dst}\n\
+         /usr/bin/xattr -dr com.apple.quarantine {dst}\n\
+         /usr/bin/hdiutil detach {mnt} >/dev/null 2>&1 || true\n\
+         /usr/bin/open {dst}\n\
+         /bin/rm -f {selfp}\n",
+        pid = pid,
+        src = sh_squote(mount_app),
+        dst = sh_squote(target_app),
+        mnt = sh_squote(mount_point),
+        selfp = sh_squote(script_path),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +402,33 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  LibSSH-macos-a
         assert_eq!(info.checksums_url.as_deref(), Some("https://objects.githubusercontent.com/checksums.txt"));
         assert!(info.notes.contains("自动更新"));
         assert!(select_release_info(&rel, "riscv").is_none());
+    }
+
+    #[test]
+    fn find_app_bundle_walks_up_to_dot_app() {
+        let exe = Path::new("/Applications/LibSSH.app/Contents/MacOS/LibSSH");
+        assert_eq!(find_app_bundle(exe), Some(PathBuf::from("/Applications/LibSSH.app")));
+        assert_eq!(find_app_bundle(Path::new("/home/q/proj/target/release/LibSSH")), None);
+        assert_eq!(
+            find_app_bundle(Path::new("/Applications/LibSSH.app")),
+            Some(PathBuf::from("/Applications/LibSSH.app"))
+        );
+    }
+
+    #[test]
+    fn build_helper_script_quotes_paths_and_has_steps() {
+        let s = build_helper_script(
+            4242,
+            Path::new("/Volumes/LibSSH 1.0/LibSSH.app"),
+            Path::new("/Applications/LibSSH.app"),
+            Path::new("/tmp/mnt"),
+            Path::new("/tmp/upd.sh"),
+        );
+        assert!(s.contains("kill -0 4242"));
+        assert!(s.contains("ditto '/Volumes/LibSSH 1.0/LibSSH.app' '/Applications/LibSSH.app'"));
+        assert!(s.contains("xattr -dr com.apple.quarantine '/Applications/LibSSH.app'"));
+        assert!(s.contains("hdiutil detach '/tmp/mnt'"));
+        assert!(s.contains("open '/Applications/LibSSH.app'"));
     }
 
     #[test]
