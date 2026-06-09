@@ -1640,6 +1640,9 @@ fn wire_callbacks(
     // ===== 自动更新接线 =====
     let pending_release: Arc<Mutex<Option<crate::updater::ReleaseInfo>>> = Arc::new(Mutex::new(None));
     let pending_helper: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
+    // 当前下载的取消开关（点"取消"时置位，download_and_verify 轮询它中止）。
+    let pending_cancel: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>> =
+        Arc::new(Mutex::new(None));
 
     fn show_release(w: &AppWindow, rel: &crate::updater::ReleaseInfo) {
         w.set_update_current(env!("CARGO_PKG_VERSION").into());
@@ -1736,14 +1739,19 @@ fn wire_callbacks(
         let runtime = runtime.clone();
         let pending = pending_release.clone();
         let helper = pending_helper.clone();
+        let cancel_slot = pending_cancel.clone();
         window.on_update_confirm(move || {
             let Some(rel) = pending.lock().unwrap().clone() else { return; };
+            // 新建本次下载的取消开关，登记到共享槽供"取消"按钮置位。
+            let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            *cancel_slot.lock().unwrap() = Some(cancel.clone());
             if let Some(w) = weak.upgrade() {
                 w.set_update_phase("downloading".into());
                 w.set_update_progress(0.0);
             }
             let weak = weak.clone();
             let helper = helper.clone();
+            let cancel_dl = cancel.clone();
             runtime.spawn(async move {
                 let prog_weak = weak.clone();
                 let last_pct = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
@@ -1760,13 +1768,15 @@ fn wire_callbacks(
                     }
                 };
 
-                let dl = crate::updater::download_and_verify(&rel, &updates_dir(), on_progress).await;
+                let dl =
+                    crate::updater::download_and_verify(&rel, &updates_dir(), cancel_dl.clone(), on_progress)
+                        .await;
 
                 match dl {
                     Ok(dmg) => {
                         let vweak = weak.clone();
                         let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(w) = vweak.upgrade() { w.set_update_phase("verifying".into()); }
+                            if let Some(w) = vweak.upgrade() { w.set_update_phase("installing".into()); }
                         });
                         let install = tokio::task::spawn_blocking(move || crate::updater::install(&dmg)).await;
                         let _ = slint::invoke_from_event_loop(move || {
@@ -1795,13 +1805,18 @@ fn wire_callbacks(
                         });
                     }
                     Err(e) => {
-                        tracing::warn!("download failed: {e:#}");
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(w) = weak.upgrade() {
-                                w.set_update_error(crate::i18n::t("下载或校验失败。", "Download or verification failed.").into());
-                                w.set_update_phase("error".into());
-                            }
-                        });
+                        // 区分用户取消与真实失败：取消时对话框已由"取消"按钮关闭，静默即可。
+                        if cancel_dl.load(std::sync::atomic::Ordering::Relaxed) {
+                            tracing::info!("update download cancelled by user");
+                        } else {
+                            tracing::warn!("download failed: {e:#}");
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(w) = weak.upgrade() {
+                                    w.set_update_error(crate::i18n::t("下载或校验失败。", "Download or verification failed.").into());
+                                    w.set_update_phase("error".into());
+                                }
+                            });
+                        }
                     }
                 }
             });
@@ -1813,6 +1828,22 @@ fn wire_callbacks(
         let weak = window.as_weak();
         window.on_update_later(move || {
             if let Some(w) = weak.upgrade() { w.set_update_open(false); }
+        });
+    }
+
+    // --- 取消下载（downloading 阶段）---
+    {
+        let weak = window.as_weak();
+        let cancel_slot = pending_cancel.clone();
+        window.on_update_cancel(move || {
+            if let Some(c) = cancel_slot.lock().unwrap().as_ref() {
+                c.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(w) = weak.upgrade() {
+                w.set_update_progress(0.0);
+                w.set_update_phase("prompt".into()); // 回到 prompt，可重新发起
+                w.set_update_open(false);            // 关闭对话框
+            }
         });
     }
 

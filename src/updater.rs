@@ -218,13 +218,15 @@ fn is_allowed_host(url: &str) -> bool {
 
 /// 下载 dmg 到 dest_dir，校验 SHA256（缺 checksums 判失败）。
 /// on_progress(已下载字节, 总字节)；总字节未知时回传 asset_size。
-/// 第一版下载不可中断——连接卡住由 connect_timeout 兜底。
+/// 下载前预检磁盘空间；下载过程中轮询 `cancel`，置位即中止并清理半成品。
 pub async fn download_and_verify(
     rel: &ReleaseInfo,
     dest_dir: &Path,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     on_progress: impl Fn(u64, u64),
 ) -> Result<PathBuf> {
     use futures::StreamExt;
+    use std::sync::atomic::Ordering;
     use tokio::io::AsyncWriteExt;
 
     if !is_allowed_host(&rel.asset_url) {
@@ -254,9 +256,20 @@ pub async fn download_and_verify(
     let expected = parse_checksums(&checksums, &rel.asset_name)
         .ok_or_else(|| anyhow!("checksums.txt has no entry for {}", rel.asset_name))?;
 
-    // 2) 流式下载到文件 + 进度；3) 读回校验 SHA256。
-    // 任何失败（网络中断、写盘、校验不符）都清理半成品文件，避免 cache 残留坏 dmg。
+    // 2) 下载前磁盘空间预检（需 asset_size + 10% 余量）。查询失败则跳过预检。
     tokio::fs::create_dir_all(dest_dir).await?;
+    if let Some(avail) = available_space(dest_dir) {
+        let needed = rel.asset_size.saturating_add(rel.asset_size / 10);
+        if avail < needed {
+            bail!(
+                "insufficient disk space for {}: need ~{needed} bytes, {avail} available",
+                rel.asset_name
+            );
+        }
+    }
+
+    // 3) 流式下载到文件 + 进度；4) 读回校验 SHA256。
+    // 任何失败（取消、网络中断、写盘、校验不符）都清理半成品文件，避免 cache 残留坏 dmg。
     let dest = dest_dir.join(&rel.asset_name);
     let result: Result<()> = async {
         let resp = client.get(&rel.asset_url).send().await?.error_for_status()?;
@@ -265,6 +278,9 @@ pub async fn download_and_verify(
         let mut downloaded: u64 = 0;
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
+            if cancel.load(Ordering::Relaxed) {
+                bail!("download cancelled");
+            }
             let chunk = chunk?;
             file.write_all(&chunk).await?;
             downloaded += chunk.len() as u64;
@@ -288,6 +304,11 @@ pub async fn download_and_verify(
             Err(e)
         }
     }
+}
+
+/// dest_dir 所在文件系统的可用字节（查询失败返回 None，跳过预检）。
+fn available_space(dir: &Path) -> Option<u64> {
+    fs2::available_space(dir).ok()
 }
 
 /// 从可执行文件路径向上找到 .app bundle 目录。

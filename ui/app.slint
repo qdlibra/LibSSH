@@ -131,6 +131,7 @@ export component AppWindow inherits Window {
     in property <bool> update-guided;            // true=引导式(方案A)
     callback update-confirm();
     callback update-later();
+    callback update-cancel();
     callback update-skip();
     callback update-restart();
     callback update-retry();
@@ -921,11 +922,11 @@ export component AppWindow inherits Window {
                 }
 
                 // 进度 / 错误区
-                if root.update-phase == "downloading" || root.update-phase == "verifying" : VerticalLayout {
+                if root.update-phase == "downloading" || root.update-phase == "installing" : VerticalLayout {
                     spacing: 4px;
                     Text {
-                        text: root.update-phase == "verifying"
-                            ? @tr("Verifying…")
+                        text: root.update-phase == "installing"
+                            ? @tr("Installing…")
                             : @tr("Downloading…") + " \{Math.round(root.update-progress * 100)}%";
                         color: Theme.text-secondary;
                         font-size: Theme.fs-sm;
@@ -982,6 +983,15 @@ export component AppWindow inherits Window {
                             Text { text: @tr("Update now"); color: #ffffff;
                                    font-size: Theme.fs-sm; horizontal-alignment: center; vertical-alignment: center; }
                         }
+                    }
+
+                    if root.update-phase == "downloading" : Rectangle {
+                        width: 72px; height: 32px; border-radius: Theme.radius-sm;
+                        background: dl-cancel-ta.has-hover ? Theme.bg-hover : transparent;
+                        border-width: 1px; border-color: Theme.border-strong;
+                        dl-cancel-ta := TouchArea { mouse-cursor: pointer; clicked => { root.update-cancel(); } }
+                        Text { text: @tr("Cancel"); color: Theme.text-secondary;
+                               font-size: Theme.fs-sm; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     if root.update-phase == "ready" : Rectangle {

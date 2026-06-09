@@ -248,3 +248,6 @@ msgstr "重试"
 
 msgid "Release page"
 msgstr "去发布页"
+
+msgid "Installing…"
+msgstr "正在安装…"

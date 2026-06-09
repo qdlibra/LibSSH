@@ -248,3 +248,6 @@ msgstr "Retry"
 
 msgid "Release page"
 msgstr "Release page"
+
+msgid "Installing…"
+msgstr "Installing…"

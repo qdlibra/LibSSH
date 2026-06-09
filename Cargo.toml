@@ -46,6 +46,8 @@ base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 semver = "1"
 sha2 = "0.10"
+# 下载前磁盘空间预检（跨平台 available_space）。
+fs2 = "0.4"
 
 [build-dependencies]
 slint-build = "1.8"
