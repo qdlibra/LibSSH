@@ -51,3 +51,33 @@ pub enum InstallOutcome {
     /// 方案 A：已打开 dmg，提示用户手动拖拽。
     GuidedManual,
 }
+
+/// 去掉首部可选的 'v' 前缀和首尾空白。
+fn normalize_tag(tag: &str) -> &str {
+    tag.trim().trim_start_matches('v')
+}
+
+/// candidate_tag 是否比 current 新（语义化版本比较）。
+fn is_newer(current: &str, candidate_tag: &str) -> Result<bool> {
+    let cur = semver::Version::parse(normalize_tag(current))
+        .with_context(|| format!("invalid current version: {current}"))?;
+    let cand = semver::Version::parse(normalize_tag(candidate_tag))
+        .with_context(|| format!("invalid release tag: {candidate_tag}"))?;
+    Ok(cand > cur)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_newer_compares_semver_ignoring_v_prefix() {
+        assert!(is_newer("0.2.3", "v0.2.4").unwrap());
+        assert!(is_newer("v0.2.3", "0.3.0").unwrap());
+        assert!(!is_newer("0.2.3", "0.2.3").unwrap());
+        assert!(!is_newer("0.2.3", "v0.2.2").unwrap());
+        assert!(is_newer("0.2.3", "v0.2.4-beta.1").unwrap());
+        assert!(!is_newer("0.2.4", "v0.2.4-beta.1").unwrap());
+        assert!(is_newer("0.2.3", "vbogus").is_err());
+    }
+}
