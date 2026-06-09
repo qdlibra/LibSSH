@@ -200,3 +200,9 @@ msgstr "Use 'New session' (top-right) to add your first server"
 
 msgid "Import ~/.ssh/config"
 msgstr "Import ~/.ssh/config"
+
+msgid "Close"
+msgstr "Close"
+
+msgid "Unsaved · click to discard"
+msgstr "Unsaved · click to discard"

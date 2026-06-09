@@ -200,3 +200,9 @@ msgstr "点击右上角 “新建会话” 添加你的第一台服务器"
 
 msgid "Import ~/.ssh/config"
 msgstr "导入 ~/.ssh/config"
+
+msgid "Close"
+msgstr "关闭"
+
+msgid "Unsaved · click to discard"
+msgstr "未保存 · 点击放弃"
