@@ -94,6 +94,39 @@ fn checksums_asset_url(assets: &[GhAsset]) -> Option<String> {
         .map(|a| a.browser_download_url.clone())
 }
 
+/// 从 `sha256sum` 格式的 checksums.txt 取某文件的期望哈希（按 basename 匹配）。
+/// 行格式：`<hex>  <filename>`，filename 可能带 `*`（二进制模式）或路径前缀。
+fn parse_checksums(text: &str, asset_name: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut it = line.split_whitespace();
+        let hash = it.next()?;
+        let name = it.next()?;
+        let name = name.trim_start_matches('*');
+        let base = name.rsplit('/').next().unwrap_or(name);
+        if base == asset_name {
+            return Some(hash.to_lowercase());
+        }
+    }
+    None
+}
+
+/// 字节流的 SHA256，返回小写十六进制串。
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let out = hasher.finalize();
+    let mut s = String::with_capacity(out.len() * 2);
+    for b in out {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +171,30 @@ mod tests {
         let assets = vec![asset("LibSSH-macos-arm64.dmg"), asset("checksums.txt")];
         assert_eq!(checksums_asset_url(&assets).as_deref(), Some("https://x/checksums.txt"));
         assert!(checksums_asset_url(&[asset("LibSSH-macos-arm64.dmg")]).is_none());
+    }
+
+    #[test]
+    fn parse_checksums_finds_entry_by_basename() {
+        let text = "\
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  LibSSH-macos-x86_64.dmg
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  LibSSH-macos-arm64.dmg
+";
+        assert_eq!(
+            parse_checksums(text, "LibSSH-macos-arm64.dmg").as_deref(),
+            Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+        assert!(parse_checksums(text, "LibSSH-windows-x86_64.exe").is_none());
+    }
+
+    #[test]
+    fn parse_checksums_tolerates_star_prefix_and_paths() {
+        let text = "abc123  *dist/LibSSH-macos-arm64.dmg\n";
+        assert_eq!(parse_checksums(text, "LibSSH-macos-arm64.dmg").as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn sha256_hex_matches_known_vectors() {
+        assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 }
