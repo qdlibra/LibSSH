@@ -10,7 +10,7 @@ import "fonts/CascadiaMono-Bold.ttf";
 import "fonts/MaterialIcons-Regular.ttf";
 
 import { Theme } from "theme.slint";
-import { TextEdit } from "std-widgets.slint";
+import { TextEdit, Palette } from "std-widgets.slint";
 import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
 import { Welcome, SessionInfo } from "welcome.slint";
@@ -61,6 +61,18 @@ export component AppWindow inherits Window {
     preferred-width: 1200px;
     preferred-height: 760px;
     background: Theme.bg-root;
+
+    // 让标准控件（SFTP 路径输入框 / 文件列表 ScrollView、内嵌编辑器 TextEdit）的
+    // 配色跟随主题亮暗。点「明亮 / 暗夜」会写 std-widgets 的 Palette.color-scheme，
+    // 写过之后 Slint 不再自动恢复系统跟随；这里镜像 Theme.is-dark 并在其变化时同步
+    // Palette，使「系统」模式（含系统主题实时切换）下标准控件也正确跟随、不残留旧配色。
+    property <bool> theme-is-dark: Theme.is-dark;
+    changed theme-is-dark => {
+        Palette.color-scheme = self.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    init => {
+        Palette.color-scheme = Theme.is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
 
     // --- Sidebar data ------------------------------------------------------
     in property <string> connection-state: @tr("Not connected");

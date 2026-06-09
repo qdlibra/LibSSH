@@ -1,5 +1,4 @@
 import { Theme } from "theme.slint";
-import { Palette } from "std-widgets.slint";
 import { Sparkline } from "widgets.slint";
 
 // One filesystem row for the disk-usage panel.
@@ -470,29 +469,23 @@ export component Sidebar inherits Rectangle {
         HorizontalLayout {
             height: 24px;
             spacing: 4px;
+            // 三个按钮只切换 Theme.mode；std-widgets 的 Palette.color-scheme 由
+            // app.slint 统一跟随 Theme.is-dark 同步（见 AppWindow 的 changed 处理），
+            // 避免在此写死 Palette 后切回「系统」时残留旧配色。
             ThemeModeButton {
                 icon: "\u{E430}"; // wb_sunny
                 value: 1;
-                clicked => {
-                    Theme.mode = 1;
-                    Palette.color-scheme = ColorScheme.light;
-                }
+                clicked => { Theme.mode = 1; }
             }
             ThemeModeButton {
                 icon: "\u{E3A8}"; // brightness_3
                 value: 2;
-                clicked => {
-                    Theme.mode = 2;
-                    Palette.color-scheme = ColorScheme.dark;
-                }
+                clicked => { Theme.mode = 2; }
             }
             ThemeModeButton {
                 icon: "\u{E30C}"; // desktop_windows
                 value: 0;
-                clicked => {
-                    Theme.mode = 0;
-                    Palette.color-scheme = ColorScheme.unknown;
-                }
+                clicked => { Theme.mode = 0; }
             }
         }
     }

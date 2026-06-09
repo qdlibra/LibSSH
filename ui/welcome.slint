@@ -80,6 +80,22 @@ component SessionRow inherits Rectangle {
             }
         }
 
+        Text {
+            text: session.name;
+            color: Theme.text-primary;
+            font-size: Theme.fs-md;
+            vertical-alignment: center;
+            width: 130px;
+            overflow: elide;
+        }
+        Text {
+            text: session.host + ":" + session.port;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+            width: 150px;
+            overflow: elide;
+        }
         // Latency probe, colour-graded: <400ms green, 400–800ms amber, >800ms red.
         // -1 = still probing, -2 = unreachable / timed out.
         Text {
@@ -96,23 +112,6 @@ component SessionRow inherits Rectangle {
             width: 52px;
             horizontal-alignment: right;
             vertical-alignment: center;
-        }
-
-        Text {
-            text: session.name;
-            color: Theme.text-primary;
-            font-size: Theme.fs-md;
-            vertical-alignment: center;
-            width: 130px;
-            overflow: elide;
-        }
-        Text {
-            text: session.host + ":" + session.port;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-sm;
-            vertical-alignment: center;
-            width: 150px;
-            overflow: elide;
         }
         Text {
             text: session.user;
@@ -136,6 +135,53 @@ component SessionRow inherits Rectangle {
             danger: true;
             clicked => { root.request-delete(); }
         }
+    }
+}
+
+// --- SessionListHeader：快速连接列表表头，列宽与 SessionRow 严格对齐 -------
+component SessionListHeader inherits Rectangle {
+    height: 22px;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+
+        Rectangle { width: 18px; }   // 对齐服务器图标列
+        Text {
+            text: @tr("Name");
+            width: 130px;
+            color: Theme.text-muted;
+            font-size: Theme.fs-xs;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        Text {
+            text: @tr("Address");
+            width: 150px;
+            color: Theme.text-muted;
+            font-size: Theme.fs-xs;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        Text {
+            text: @tr("Latency");
+            width: 52px;
+            color: Theme.text-muted;
+            font-size: Theme.fs-xs;
+            font-weight: 600;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        Text {
+            text: @tr("User");
+            horizontal-stretch: 1;
+            color: Theme.text-muted;
+            font-size: Theme.fs-xs;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        // 对齐 Connect / Edit / Delete 按钮区（66×3 + 间距 10×2 = 218px）
+        Rectangle { width: 218px; }
     }
 }
 
@@ -230,6 +276,7 @@ export component Welcome inherits Rectangle {
 
                 if sessions.length > 0 : VerticalLayout {
                     spacing: 2px;
+                    SessionListHeader {}
                     for session[i] in sessions : SessionRow {
                         session: session;
                         connect => { root.connect-session(session.id); }

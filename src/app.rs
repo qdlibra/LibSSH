@@ -2695,4 +2695,32 @@ mod tests {
         assert!(should_rebuild);
         assert_eq!(bufs.lock().unwrap()[tab_id].parser.screen().size(), (40, 120));
     }
+
+    #[test]
+    fn terminal_resize_noops_when_grid_unchanged() {
+        // 拖拽 SFTP 分隔器松手时，若网格尺寸未变，resize_terminal_buffer 必须返回
+        // applied=false 短路，避免重复向远端发 window_change/SIGWINCH —— 否则远端
+        // shell 会反复重打印提示符，正是「拖动文件管理器后命令行多次换行/间隔」的根因。
+        let tab_id = "term-noop";
+        let bufs: TermBuffers = Arc::new(Mutex::new(HashMap::new()));
+        let buf = TermBuffer {
+            parser: vt100::Parser::new(24, 80, 5000),
+            find_query: String::new(),
+            sel: None,
+            history: Vec::new(),
+            prev: Vec::new(),
+            view_offset: 0,
+            displayed_text: Vec::new(),
+            csi_state: CsiState::Normal,
+        };
+        bufs.lock().unwrap().insert(tab_id.to_string(), buf);
+        let last_size = Arc::new(Mutex::new((80, 24)));
+
+        // 请求与当前完全相同的网格（80 列 × 24 行）。
+        let (cols, rows, applied) =
+            resize_terminal_buffer(tab_id, 80.0, 24.0, &bufs, &last_size);
+
+        assert_eq!((cols, rows), (80, 24));
+        assert!(!applied, "网格未变时必须短路，不得重复 resize");
+    }
 }

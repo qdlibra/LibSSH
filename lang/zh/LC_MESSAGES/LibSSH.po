@@ -63,6 +63,15 @@ msgstr "新建会话"
 msgid "Name"
 msgstr "名称"
 
+msgid "Address"
+msgstr "地址"
+
+msgid "Latency"
+msgstr "延迟"
+
+msgid "User"
+msgstr "用户"
+
 msgid "e.g. production web-01"
 msgstr "例如：生产环境 web-01"
 

@@ -63,6 +63,15 @@ msgstr "New session"
 msgid "Name"
 msgstr "Name"
 
+msgid "Address"
+msgstr "Address"
+
+msgid "Latency"
+msgstr "Latency"
+
+msgid "User"
+msgstr "User"
+
 msgid "e.g. production web-01"
 msgstr "e.g. production web-01"
 
