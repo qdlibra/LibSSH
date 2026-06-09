@@ -215,3 +215,36 @@ msgstr "关闭"
 
 msgid "Unsaved · click to discard"
 msgstr "未保存 · 点击放弃"
+
+msgid "Check for updates"
+msgstr "检查更新"
+
+msgid "New version available"
+msgstr "发现新版本"
+
+msgid "Skip this version"
+msgstr "跳过此版本"
+
+msgid "Later"
+msgstr "稍后"
+
+msgid "Update now"
+msgstr "立即更新"
+
+msgid "Downloading…"
+msgstr "下载中…"
+
+msgid "Verifying…"
+msgstr "校验中…"
+
+msgid "Restart now"
+msgstr "立即重启"
+
+msgid "Done"
+msgstr "完成"
+
+msgid "Retry"
+msgstr "重试"
+
+msgid "Release page"
+msgstr "去发布页"
