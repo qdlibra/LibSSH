@@ -68,4 +68,4 @@ The release workflow builds Windows, Ubuntu, macOS Apple Silicon, and macOS Inte
 
 ## 自动打包
 
-git tag v0.2.3 && git push origin v0.2.3
+git tag v0.2.6 && git push origin v0.2.6
