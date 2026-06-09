@@ -66,6 +66,34 @@ fn is_newer(current: &str, candidate_tag: &str) -> Result<bool> {
     Ok(cand > cur)
 }
 
+/// 运行时架构 → release 产物命名里的架构标签。
+fn arch_tag(arch: &str) -> Option<&'static str> {
+    match arch {
+        "aarch64" => Some("arm64"),
+        "x86_64" => Some("x86_64"),
+        _ => None,
+    }
+}
+
+/// 当前编译目标的架构标签。
+fn target_arch_tag() -> Option<&'static str> {
+    arch_tag(std::env::consts::ARCH)
+}
+
+/// 选出当前架构对应的 macOS dmg。
+fn pick_asset<'a>(assets: &'a [GhAsset], arch_tag: &str) -> Option<&'a GhAsset> {
+    let needle = format!("LibSSH-macos-{arch_tag}.dmg");
+    assets.iter().find(|a| a.name == needle)
+}
+
+/// 找到 checksums.txt 的下载直链。
+fn checksums_asset_url(assets: &[GhAsset]) -> Option<String> {
+    assets
+        .iter()
+        .find(|a| a.name == "checksums.txt")
+        .map(|a| a.browser_download_url.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,5 +107,36 @@ mod tests {
         assert!(is_newer("0.2.3", "v0.2.4-beta.1").unwrap());
         assert!(!is_newer("0.2.4", "v0.2.4-beta.1").unwrap());
         assert!(is_newer("0.2.3", "vbogus").is_err());
+    }
+
+    fn asset(name: &str) -> GhAsset {
+        GhAsset { name: name.into(), browser_download_url: format!("https://x/{name}"), size: 1 }
+    }
+
+    #[test]
+    fn arch_tag_maps_known_arches() {
+        assert_eq!(arch_tag("aarch64"), Some("arm64"));
+        assert_eq!(arch_tag("x86_64"), Some("x86_64"));
+        assert_eq!(arch_tag("powerpc"), None);
+    }
+
+    #[test]
+    fn pick_asset_matches_macos_dmg_for_arch() {
+        let assets = vec![
+            asset("LibSSH-macos-arm64.dmg"),
+            asset("LibSSH-macos-x86_64.dmg"),
+            asset("LibSSH-windows-x86_64.exe"),
+            asset("checksums.txt"),
+        ];
+        assert_eq!(pick_asset(&assets, "arm64").unwrap().name, "LibSSH-macos-arm64.dmg");
+        assert_eq!(pick_asset(&assets, "x86_64").unwrap().name, "LibSSH-macos-x86_64.dmg");
+        assert!(pick_asset(&assets, "riscv").is_none());
+    }
+
+    #[test]
+    fn checksums_asset_url_finds_checksums_txt() {
+        let assets = vec![asset("LibSSH-macos-arm64.dmg"), asset("checksums.txt")];
+        assert_eq!(checksums_asset_url(&assets).as_deref(), Some("https://x/checksums.txt"));
+        assert!(checksums_asset_url(&[asset("LibSSH-macos-arm64.dmg")]).is_none());
     }
 }
