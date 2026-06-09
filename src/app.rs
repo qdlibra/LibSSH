@@ -1,7 +1,7 @@
 slint::include_modules!();
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -79,6 +79,8 @@ pub fn run() -> anyhow::Result<()> {
     let sftp_manual_nav: SftpManualNav = Arc::new(Mutex::new(HashMap::new()));
     let bufs: TermBuffers = Arc::new(Mutex::new(HashMap::new()));
     let tab_statuses: TabStatuses = Arc::new(Mutex::new(HashMap::new()));
+    // 用户主动关闭的标签集合：用于抑制因关闭"未连上/连接中"的标签而误弹"连接失败"框。
+    let user_closing_tabs: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     let local_snap: LocalSnap = Arc::new(Mutex::new(SystemSnapshot::default()));
     let local_net_hist: NetHist = Arc::new(Mutex::new(vec![0.0; NET_HISTORY_LEN]));
     let last_term_size: Arc<Mutex<(u32, u32)>> = Arc::new(Mutex::new((80, 24)));
@@ -93,6 +95,7 @@ pub fn run() -> anyhow::Result<()> {
         sftp_manual_nav.clone(),
         bufs,
         tab_statuses.clone(),
+        user_closing_tabs,
         local_snap.clone(),
         local_net_hist.clone(),
         last_term_size,
@@ -313,6 +316,13 @@ fn should_show_connection_failed_alert(previous_state: Option<u8>) -> bool {
     matches!(previous_state, None | Some(0))
 }
 
+/// 是否应在会话断开时弹"连接失败"框。
+/// `was_user_close` 为 true 表示用户主动关闭了该标签（点 × 关标签），
+/// 这种断开是预期内的，永不弹窗；否则沿用"仅未成功连接前才弹"的逻辑。
+fn should_alert_on_close(was_user_close: bool, previous_state: Option<u8>) -> bool {
+    !was_user_close && should_show_connection_failed_alert(previous_state)
+}
+
 fn show_connection_failed_alert(win: &AppWindow, reason: &str) {
     let title = crate::i18n::t("连接失败", "Connection failed");
     let message = reason.trim();
@@ -486,6 +496,7 @@ fn wire_callbacks(
     sftp_manual_nav: SftpManualNav,
     bufs: TermBuffers,
     tab_statuses: TabStatuses,
+    user_closing_tabs: Arc<Mutex<HashSet<String>>>,
     local_snap: LocalSnap,
     local_net_hist: NetHist,
     last_term_size: Arc<Mutex<(u32, u32)>>,
@@ -764,6 +775,7 @@ fn wire_callbacks(
     let connect_statuses = tab_statuses.clone();
     let connect_local = local_snap.clone();
     let connect_hist = local_net_hist.clone();
+    let connect_user_closing = user_closing_tabs.clone();
     let connect_last_size = last_term_size.clone();
     window.on_connect_session(move |id: SharedString| {
         let id = id.to_string();
@@ -779,6 +791,7 @@ fn wire_callbacks(
         let connect_statuses = connect_statuses.clone();
         let connect_local = connect_local.clone();
         let connect_hist = connect_hist.clone();
+        let connect_user_closing = connect_user_closing.clone();
         let connect_last_size = connect_last_size.clone();
 
         Timer::single_shot(std::time::Duration::from_millis(1), move || {
@@ -867,6 +880,7 @@ fn wire_callbacks(
             let statuses_events = connect_statuses.clone();
             let local_events = connect_local.clone();
             let hist_events = connect_hist.clone();
+            let user_closing_events = connect_user_closing.clone();
             let sftp_handles_events = connect_sftp_handles.clone();
             let sftp_manual_events = connect_sftp_manual_nav.clone();
             let runtime_events = connect_runtime.clone();
@@ -903,6 +917,7 @@ fn wire_callbacks(
                     let statuses_evt = statuses_events.clone();
                     let local_evt = local_events.clone();
                     let hist_evt = hist_events.clone();
+                    let user_closing_evt = user_closing_events.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(w) = weak_evt.upgrade() {
                             apply_session_event_to_window(
@@ -913,6 +928,7 @@ fn wire_callbacks(
                                 &statuses_evt,
                                 &local_evt,
                                 &hist_evt,
+                                &user_closing_evt,
                             );
                         }
                     });
@@ -924,6 +940,7 @@ fn wire_callbacks(
             let statuses_events = connect_statuses.clone();
             let local_events = connect_local.clone();
             let hist_events = connect_hist.clone();
+            let user_closing_events = connect_user_closing.clone();
             let tab_events = tab_id.clone();
             std::thread::spawn(move || {
                 while let Some(event) = sftp_rx.blocking_recv() {
@@ -933,6 +950,7 @@ fn wire_callbacks(
                     let statuses_evt = statuses_events.clone();
                     let local_evt = local_events.clone();
                     let hist_evt = hist_events.clone();
+                    let user_closing_evt = user_closing_events.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(w) = weak_evt.upgrade() {
                             apply_session_event_to_window(
@@ -943,6 +961,7 @@ fn wire_callbacks(
                                 &statuses_evt,
                                 &local_evt,
                                 &hist_evt,
+                                &user_closing_evt,
                             );
                         }
                     });
@@ -961,11 +980,14 @@ fn wire_callbacks(
     let close_statuses = tab_statuses.clone();
     let close_local = local_snap.clone();
     let close_hist = local_net_hist.clone();
+    let close_user_closing = user_closing_tabs.clone();
     window.on_tab_closed(move |id: SharedString| {
         let id = id.to_string();
         if id == "welcome" {
             return;
         }
+        // 标记为"用户主动关闭"，让随后异步到达的 Closed 事件不要误弹"连接失败"框。
+        close_user_closing.lock().unwrap().insert(id.clone());
         if let Some(handle) = close_handles.borrow_mut().remove(&id) {
             handle.close();
         }
@@ -1677,6 +1699,7 @@ fn apply_session_event_to_window(
     statuses: &TabStatuses,
     local: &LocalSnap,
     local_net_hist: &NetHist,
+    user_closing: &Arc<Mutex<HashSet<String>>>,
 ) {
     let tabs_rc = win.get_tabs();
     let terminals_rc = win.get_terminals();
@@ -1770,12 +1793,14 @@ fn apply_session_event_to_window(
                 t.status = format!("{} - {reason}", crate::i18n::t("已断开", "Disconnected")).into()
             });
             let show_failure_alert = {
+                // 取出并清除"用户主动关闭"标记（一次性）。
+                let was_user_close = user_closing.lock().unwrap().remove(tab_id);
                 let mut statuses = statuses.lock().unwrap();
                 let previous_state = statuses.get(tab_id).map(|st| st.state);
                 if let Some(st) = statuses.get_mut(tab_id) {
                     st.state = 2;
                 }
-                should_show_connection_failed_alert(previous_state)
+                should_alert_on_close(was_user_close, previous_state)
             };
             if show_failure_alert {
                 show_connection_failed_alert(win, &reason);
@@ -2599,6 +2624,18 @@ mod tests {
         assert!(should_show_connection_failed_alert(Some(0)));
         assert!(!should_show_connection_failed_alert(Some(1)));
         assert!(!should_show_connection_failed_alert(Some(2)));
+    }
+
+    #[test]
+    fn user_close_suppresses_failure_alert() {
+        // 用户主动关闭标签：永不弹窗，即使从未连上。
+        assert!(!should_alert_on_close(true, None));
+        assert!(!should_alert_on_close(true, Some(0)));
+        // 非用户关闭：沿用原"仅未成功连接前弹窗"的逻辑。
+        assert!(should_alert_on_close(false, None));
+        assert!(should_alert_on_close(false, Some(0)));
+        assert!(!should_alert_on_close(false, Some(1)));
+        assert!(!should_alert_on_close(false, Some(2)));
     }
 
     #[test]
