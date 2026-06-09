@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { IconButton, PrimaryButton, GhostButton } from "widgets.slint";
+import { PrimaryButton, GhostButton } from "widgets.slint";
 
 export struct SessionInfo {
     id: string,
@@ -11,99 +11,58 @@ export struct SessionInfo {
     last-used: string, // ISO timestamp or "never"
 }
 
+component SessionActionButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <length> button-width: 66px;
+    callback clicked();
+
+    width: button-width;
+    height: 24px;
+    border-radius: Theme.radius-sm;
+    border-width: primary ? 0px : 1px;
+    border-color: danger ? Theme.danger : Theme.border-subtle;
+    background: primary
+        ? (action-ta.pressed ? Theme.accent-pressed
+           : (action-ta.has-hover ? Theme.accent-hover : Theme.accent))
+        : danger
+            ? (action-ta.has-hover ? Theme.danger.with-alpha(0.14) : transparent)
+            : (action-ta.has-hover ? Theme.bg-hover : Theme.bg-panel);
+    animate background, border-color { duration: 120ms; }
+
+    Text {
+        text: root.text;
+        color: primary ? white : (danger ? Theme.danger : Theme.text-primary);
+        font-size: Theme.fs-xs;
+        font-weight: primary ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    action-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 // --- SessionRow ------------------------------------------------------------
 component SessionRow inherits Rectangle {
     in property <SessionInfo> session;
     callback connect();
     callback edit();
-    callback remove();
+    callback request-delete();
 
-    height: 36px;
+    height: 40px;
     border-radius: Theme.radius-sm;
-    background: touch.has-hover ? Theme.bg-hover : transparent;
-    animate background { duration: 120ms; }
-
-    // Remember where the right-click landed so the popup can appear there.
-    property <length> ctx-x;
-    property <length> ctx-y;
-
-    touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.connect(); }
-        pointer-event(e) => {
-            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
-                ctx-x = self.mouse-x;
-                ctx-y = self.mouse-y;
-                ctx-menu.show();
-            }
-        }
-    }
-
-    // Right-click context menu -----------------------------------------------
-    ctx-menu := PopupWindow {
-        x: ctx-x;
-        y: ctx-y;
-        width: 120px;
-        height: 72px;
-
-        Rectangle {
-            background: Theme.bg-panel;
-            border-radius: Theme.radius-sm;
-            border-width: 1px;
-            border-color: Theme.border-strong;
-            drop-shadow-blur: 10px;
-            drop-shadow-color: #00000050;
-
-            VerticalLayout {
-                padding: 4px;
-                spacing: 2px;
-
-                // Edit
-                Rectangle {
-                    height: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: edit-ta.has-hover ? Theme.bg-hover : transparent;
-                    edit-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.edit(); }
-                    }
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        spacing: 8px;
-                        alignment: center;
-                        Text { text: "\u{E3C9}"; font-family: "Material Icons"; color: Theme.text-secondary; font-size: Theme.fs-sm; vertical-alignment: center; }
-                        Text { text: @tr("Edit"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
-                    }
-                }
-
-                Rectangle { height: 1px; background: Theme.border-subtle; }
-
-                // Delete (red tint)
-                Rectangle {
-                    height: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: del-ta.has-hover ? #cc333320 : transparent;
-                    del-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.remove(); }
-                    }
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        spacing: 8px;
-                        alignment: center;
-                        Text { text: "\u{E872}"; font-family: "Material Icons"; color: #cc3333; font-size: Theme.fs-sm; vertical-alignment: center; }
-                        Text { text: @tr("Delete"); color: #cc3333; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
-                    }
-                }
-            }
-        }
-    }
+    background: transparent;
 
     // Row content ------------------------------------------------------------
     HorizontalLayout {
         padding-left: 10px;
         padding-right: 10px;
-        spacing: 12px;
+        spacing: 10px;
 
         Rectangle {
             width: 18px; height: 18px;
@@ -125,7 +84,7 @@ component SessionRow inherits Rectangle {
             color: Theme.text-primary;
             font-size: Theme.fs-md;
             vertical-alignment: center;
-            width: 180px;
+            width: 130px;
             overflow: elide;
         }
         Text {
@@ -133,7 +92,7 @@ component SessionRow inherits Rectangle {
             color: Theme.text-secondary;
             font-size: Theme.fs-sm;
             vertical-alignment: center;
-            width: 180px;
+            width: 150px;
             overflow: elide;
         }
         Text {
@@ -142,6 +101,21 @@ component SessionRow inherits Rectangle {
             font-size: Theme.fs-sm;
             vertical-alignment: center;
             horizontal-stretch: 1;
+            overflow: elide;
+        }
+        SessionActionButton {
+            text: @tr("Connect");
+            primary: true;
+            clicked => { root.connect(); }
+        }
+        SessionActionButton {
+            text: @tr("Edit");
+            clicked => { root.edit(); }
+        }
+        SessionActionButton {
+            text: @tr("Delete");
+            danger: true;
+            clicked => { root.request-delete(); }
         }
     }
 }
@@ -155,6 +129,9 @@ export component Welcome inherits Rectangle {
     callback connect-session(string);
     callback edit-session(string);
     callback remove-session(string);
+    in-out property <bool> delete-confirm-open: false;
+    in-out property <string> pending-delete-id;
+    in-out property <string> pending-delete-name;
 
     background: Theme.bg-root;
 
@@ -169,11 +146,6 @@ export component Welcome inherits Rectangle {
                 color: Theme.text-primary;
                 font-size: 28px;
                 font-weight: 700;
-            }
-            Text {
-                text: @tr("LibSSH — a lightweight Rust + Slint SSH client by 'lil meatball'");
-                color: Theme.text-secondary;
-                font-size: Theme.fs-md;
             }
         }
 
@@ -243,7 +215,11 @@ export component Welcome inherits Rectangle {
                         session: session;
                         connect => { root.connect-session(session.id); }
                         edit => { root.edit-session(session.id); }
-                        remove => { root.remove-session(session.id); }
+                        request-delete => {
+                            root.pending-delete-id = session.id;
+                            root.pending-delete-name = session.name;
+                            root.delete-confirm-open = true;
+                        }
                     }
                 }
             }
@@ -251,5 +227,80 @@ export component Welcome inherits Rectangle {
 
         // Filler
         Rectangle { vertical-stretch: 1; }
+    }
+
+    Rectangle {
+        visible: root.delete-confirm-open;
+        width: parent.width;
+        height: parent.height;
+        background: #00000080;
+
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(380px, parent.width - 48px);
+            height: 178px;
+            background: Theme.bg-panel;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #00000070;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+
+                Text {
+                    text: @tr("Delete session");
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-lg;
+                    font-weight: 700;
+                }
+
+                Text {
+                    text: @tr("Delete this session from quick connect?");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                    wrap: word-wrap;
+                }
+
+                Text {
+                    text: root.pending-delete-name;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-md;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    GhostButton {
+                        text: @tr("Cancel");
+                        clicked => {
+                            root.delete-confirm-open = false;
+                            root.pending-delete-id = "";
+                            root.pending-delete-name = "";
+                        }
+                    }
+
+                    SessionActionButton {
+                        text: @tr("OK");
+                        danger: true;
+                        button-width: 80px;
+                        clicked => {
+                            root.remove-session(root.pending-delete-id);
+                            root.delete-confirm-open = false;
+                            root.pending-delete-id = "";
+                            root.pending-delete-name = "";
+                        }
+                    }
+                }
+            }
+        }
     }
 }

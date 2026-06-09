@@ -112,7 +112,7 @@ fn initialise_models(window: &AppWindow, store: &ConfigStore) -> AppModels {
     let tabs_model: Rc<VecModel<TabInfo>> = Rc::new(VecModel::default());
     tabs_model.push(TabInfo {
         id: "welcome".into(),
-        title: crate::i18n::t("新标签页", "New tab").into(),
+        title: crate::i18n::t("连接管理", "Connection manager").into(),
         kind: "welcome".into(),
         connected: false,
     });

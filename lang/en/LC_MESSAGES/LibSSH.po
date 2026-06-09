@@ -174,11 +174,20 @@ msgstr "Find"
 msgid "Expand file manager"
 msgstr "Expand file manager"
 
-msgid "LibSSH — a lightweight Rust + Slint SSH client by 'lil meatball'"
-msgstr "LibSSH — a lightweight Rust + Slint SSH client by 'lil meatball'"
-
 msgid "Quick connect"
 msgstr "Quick connect"
+
+msgid "Connect"
+msgstr "Connect"
+
+msgid "Delete session"
+msgstr "Delete session"
+
+msgid "Delete this session from quick connect?"
+msgstr "Delete this session from quick connect?"
+
+msgid "OK"
+msgstr "OK"
 
 msgid "+ New session"
 msgstr "+ New session"

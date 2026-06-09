@@ -5,7 +5,8 @@ name: Release
 #                       create v<version> and publish a GitHub Release.
 #                       (A plain commit that does NOT touch the version is a no-op.)
 #   * Push a v* tag -> release that tag directly (manual escape hatch / re-run).
-#   * Manual run    -> release the current Cargo.toml version if not already tagged.
+#   * Manual run    -> build the selected ref and publish/update assets under
+#                       the current Cargo.toml version tag.
 #
 # Note: the tag created here is pushed with the default GITHUB_TOKEN, and GitHub
 # deliberately does NOT re-trigger workflows for token-pushed refs, so this can
@@ -58,6 +59,12 @@ jobs:
           echo "Cargo.toml version: $VERSION -> candidate tag $TAG"
 
           if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "refs/tags/$TAG"; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "Tag $TAG already exists; manual run will rebuild and update release assets."
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
+              echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "Tag $TAG already exists; version unchanged, nothing to release."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
             echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -86,17 +93,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux-x86_64
+          - name: ubuntu-x86_64
             os: ubuntu-latest
-          - name: macos
-            os: macos-latest
+          - name: macos-arm64
+            os: macos-15
+          - name: macos-x86_64
+            os: macos-15-intel
           - name: windows-x86_64
             os: windows-latest
 
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.check.outputs.tag }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || needs.check.outputs.tag }}
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -122,8 +131,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.name }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
+            ${{ matrix.name }}-cargo-release-
             ${{ runner.os }}-cargo-release-
             ${{ runner.os }}-cargo-
 
@@ -133,23 +143,47 @@ jobs:
       - name: Package Linux
         if: runner.os == 'Linux'
         run: |
+          VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
           mkdir -p "dist/LibSSH-${{ matrix.name }}"
           cp target/release/LibSSH "dist/LibSSH-${{ matrix.name }}/"
           cp assets/LibSSH.desktop assets/icon@512.png assets/install-linux.sh README.md "dist/LibSSH-${{ matrix.name }}/"
           tar -czf "dist/LibSSH-${{ matrix.name }}.tar.gz" -C dist "LibSSH-${{ matrix.name }}"
 
+          DEB_ROOT="dist/deb-root"
+          rm -rf "$DEB_ROOT"
+          mkdir -p \
+            "$DEB_ROOT/DEBIAN" \
+            "$DEB_ROOT/usr/bin" \
+            "$DEB_ROOT/usr/share/applications" \
+            "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps"
+          install -m 0755 target/release/LibSSH "$DEB_ROOT/usr/bin/LibSSH"
+          install -m 0644 assets/LibSSH.desktop "$DEB_ROOT/usr/share/applications/LibSSH.desktop"
+          install -m 0644 assets/icon@512.png "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps/LibSSH.png"
+          cat > "$DEB_ROOT/DEBIAN/control" <<EOF
+          Package: libssh-app
+          Version: $VERSION
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Maintainer: LibSSH contributors
+          Depends: libfontconfig1, libxkbcommon0, libxcb1, libxcb-render0, libxcb-shape0, libxcb-xfixes0
+          Description: Lightweight Rust + Slint SSH terminal client
+          EOF
+          sed -i 's/^          //' "$DEB_ROOT/DEBIAN/control"
+          dpkg-deb --build "$DEB_ROOT" "dist/LibSSH-${{ matrix.name }}.deb"
+
       - name: Package macOS
         if: runner.os == 'macOS'
         run: |
-          chmod +x scripts/package-macos-aarch64-dmg.sh
-          scripts/package-macos-aarch64-dmg.sh target/release/LibSSH dist
+          chmod +x scripts/package-macos-dmg.sh
+          scripts/package-macos-dmg.sh target/release/LibSSH dist
 
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Compress-Archive -Path target\release\LibSSH.exe -DestinationPath dist\LibSSH-${{ matrix.name }}.zip -Force
+          Copy-Item target\release\LibSSH.exe -Destination dist\LibSSH-${{ matrix.name }}.exe -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -157,8 +191,9 @@ jobs:
           name: LibSSH-${{ matrix.name }}
           path: |
             dist/*.tar.gz
+            dist/*.deb
             dist/*.dmg
-            dist/*.zip
+            dist/*.exe
           if-no-files-found: error
 
   publish:

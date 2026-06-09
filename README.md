@@ -48,7 +48,7 @@ macOS packaging creates an unsigned `.app` bundle and `.dmg`:
 
 ```bash
 cargo build --release
-scripts/package-macos-aarch64-dmg.sh target/release/LibSSH dist
+scripts/package-macos-dmg.sh target/release/LibSSH dist
 ```
 
 For an unsigned macOS build downloaded from a release, clear quarantine before opening:
@@ -58,3 +58,14 @@ xattr -dr com.apple.quarantine LibSSH.app
 ```
 
 GitHub releases are built by `.github/workflows/release.yml` when pushing a `v*` tag.
+The release workflow builds Windows, Ubuntu, macOS Apple Silicon, and macOS Intel artifacts:
+
+- `LibSSH-windows-x86_64.zip`
+- `LibSSH-ubuntu-x86_64.tar.gz`
+- `LibSSH-ubuntu-x86_64.deb`
+- `LibSSH-macos-arm64.dmg`
+- `LibSSH-macos-x86_64.dmg`
+
+## 自动打包
+
+git tag v0.2.3 && git push origin v0.2.3

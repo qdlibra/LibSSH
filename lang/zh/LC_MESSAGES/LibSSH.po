@@ -174,11 +174,20 @@ msgstr "查找"
 msgid "Expand file manager"
 msgstr "展开文件管理器"
 
-msgid "LibSSH — a lightweight Rust + Slint SSH client by 'lil meatball'"
-msgstr "LibSSH 一个由「一坨肉」开发的轻量 Rust + Slint SSH 客户端"
-
 msgid "Quick connect"
 msgstr "快速连接"
+
+msgid "Connect"
+msgstr "连接"
+
+msgid "Delete session"
+msgstr "删除会话"
+
+msgid "Delete this session from quick connect?"
+msgstr "确定从快速连接中删除此会话？"
+
+msgid "OK"
+msgstr "确定"
 
 msgid "+ New session"
 msgstr "+ 新建会话"
