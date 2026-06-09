@@ -51,6 +51,8 @@ fs2 = "0.4"
 
 [build-dependencies]
 slint-build = "1.8"
+# 注入构建日期到「关于」对话框（约等于发版日期）。
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Embeds assets/LibSSH.ico into the .exe so Explorer / taskbar / shortcuts
 # show the app icon. Windows-only; ignored on other targets.

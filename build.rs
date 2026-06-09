@@ -4,6 +4,12 @@ fn main() {
     // The blueprint's implementation uses English msgids; zh.po translates
     // English to Chinese and en.po remains identity.
     println!("cargo:rerun-if-changed=lang");
+
+    // 注入构建日期，供「关于」对话框显示「发版日期」。clean build 取当天日期；
+    // 增量构建沿用上次值（发版走 clean build，故约等于发版日期）。
+    let build_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    println!("cargo:rustc-env=LIBSSH_BUILD_DATE={build_date}");
+
     slint_build::compile_with_config(
         "ui/app.slint",
         slint_build::CompilerConfiguration::new()

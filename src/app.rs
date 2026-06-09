@@ -63,7 +63,7 @@ struct TabStatus {
     disks: Vec<(String, u64, u64)>,
 }
 
-pub fn run() -> anyhow::Result<()> {
+pub fn run(log_buffer: crate::logbuf::LogBuffer) -> anyhow::Result<()> {
     let runtime = Arc::new(Runtime::new()?);
     let store = Rc::new(RefCell::new(ConfigStore::load()?));
     crate::i18n::set_language(store.borrow().language());
@@ -72,6 +72,7 @@ pub fn run() -> anyhow::Result<()> {
     crate::i18n::apply_to_slint();
     window.set_lang_en(crate::i18n::is_en());
     window.set_app_version(env!("CARGO_PKG_VERSION").into());
+    window.set_build_date(env!("LIBSSH_BUILD_DATE").into());
 
     // 初始化「全局 CLI」开关状态（仅 Unix；Windows 整行隐藏）。
     #[cfg(unix)]
@@ -113,6 +114,46 @@ pub fn run() -> anyhow::Result<()> {
     register_file_drop(&window, sftp_handles);
     start_local_sampler(&window, tab_statuses, local_snap, local_net_hist);
 
+    // 「运行日志」浮层：清空 / 复制回调，以及打开时定时把缓冲快照刷到 UI。
+    {
+        let weak = window.as_weak();
+        let lb = log_buffer.clone();
+        window.on_log_clear(move || {
+            crate::logbuf::clear(&lb);
+            if let Some(w) = weak.upgrade() {
+                w.set_log_lines(ModelRc::from(Rc::new(VecModel::<SharedString>::default())));
+            }
+        });
+    }
+    {
+        let lb = log_buffer.clone();
+        window.on_log_copy(move || {
+            let text = crate::logbuf::snapshot(&lb).join("\n");
+            let _ = arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text));
+        });
+    }
+    // 定时刷新：仅在浮层打开时把缓冲快照同步到 UI（开销极小，关闭时只读一个 bool）。
+    let log_timer = slint::Timer::default();
+    {
+        let weak = window.as_weak();
+        let lb = log_buffer.clone();
+        log_timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(800),
+            move || {
+                if let Some(w) = weak.upgrade() {
+                    if w.get_log_open() {
+                        let rows: Vec<SharedString> = crate::logbuf::snapshot(&lb)
+                            .into_iter()
+                            .map(SharedString::from)
+                            .collect();
+                        w.set_log_lines(ModelRc::from(Rc::new(VecModel::from(rows))));
+                    }
+                }
+            },
+        );
+    }
+
     window.run()?;
     Ok(())
 }
@@ -135,14 +176,6 @@ fn initialise_models(window: &AppWindow, store: &ConfigStore) -> AppModels {
     let terminals_model: Rc<VecModel<TerminalState>> = Rc::new(VecModel::default());
     window.set_terminals(ModelRc::from(terminals_model.clone()));
     window.set_transfers(empty_model::<TransferInfo>());
-    window.set_about_libs(ModelRc::from(Rc::new(VecModel::from(vec![
-        "Rust".into(),
-        "Slint".into(),
-        "russh".into(),
-        "russh-sftp".into(),
-        "vt100".into(),
-        "tokio".into(),
-    ]))));
 
     window.set_net_top_history(ModelRc::from(Rc::new(VecModel::from(vec![0.0; 60]))));
     window.set_net_bot_history(ModelRc::from(Rc::new(VecModel::from(vec![0.0; 60]))));
@@ -1890,6 +1923,19 @@ fn wire_callbacks(
     {
         window.on_update_open_release(move || {
             let url = "https://github.com/qdlibra/LibSSH/releases/latest";
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
+            #[cfg(target_os = "windows")]
+            let _ = std::process::Command::new("cmd").args(["/C", "start", url]).spawn();
+            #[cfg(all(unix, not(target_os = "macos")))]
+            let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+        });
+    }
+
+    // --- 关于对话框：打开 github 仓库主页 ---
+    {
+        window.on_open_github(move || {
+            let url = "https://github.com/qdlibra/LibSSH";
             #[cfg(target_os = "macos")]
             let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
             #[cfg(target_os = "windows")]
