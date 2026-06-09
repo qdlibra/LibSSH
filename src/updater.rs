@@ -162,6 +162,38 @@ fn should_offer(current: &str, tag: &str, skipped: Option<&str>, manual: bool) -
     Ok(true)
 }
 
+/// 查询 GitHub 最新 release 并决定是否有可供本机安装的更新。
+/// 返回 Ok(None) 表示已是最新 / 被跳过 / 本架构无产物。
+pub async fn check_for_update(
+    current: &str,
+    skipped: Option<String>,
+    manual: bool,
+) -> Result<Option<ReleaseInfo>> {
+    let arch = target_arch_tag().ok_or_else(|| anyhow!("unsupported architecture for auto-update"))?;
+    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+    let json = client
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .context("failed to reach GitHub releases API")?
+        .error_for_status()
+        .context("GitHub releases API returned an error")?
+        .text()
+        .await?;
+
+    let rel = parse_release(&json)?;
+    if !should_offer(current, &rel.tag_name, skipped.as_deref(), manual)? {
+        return Ok(None);
+    }
+    Ok(select_release_info(&rel, arch))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
