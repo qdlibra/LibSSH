@@ -349,8 +349,15 @@ export component SftpPanel inherits Rectangle {
                                 padding-left: 8px; padding-right: 8px; spacing: 4px;
 
                                 Text {
-                                    text: entry.is-dir ? "📁 " + entry.name : "📄 " + entry.name;
-                                    color: entry.is-dir ? Theme.accent : Theme.text-primary;
+                                    text: entry.is-dir ? "\u{e2c7}" : "\u{e873}";
+                                    font-family: "Material Icons";
+                                    color: entry.is-dir ? Theme.folder-icon : Theme.text-muted;
+                                    font-size: Theme.fs-md;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: entry.name;
+                                    color: Theme.text-primary;
                                     font-size: Theme.fs-sm;
                                     horizontal-stretch: 1;
                                     overflow: elide;
