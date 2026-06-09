@@ -2028,6 +2028,10 @@ fn cursor_pos() -> Option<(i32, i32)> {
 
 #[cfg(windows)]
 fn handle_file_drop(win: &AppWindow, sftp_handles: &SftpHandles, path: String) {
+    // with_winit_window 是 WinitWindowAccessor 扩展 trait 的方法，需在本函数作用域内
+    // 引入该 trait（register_file_drop 里的 use 不跨函数）。否则 Windows 编译报
+    // E0599: no method named `with_winit_window`。
+    use i_slint_backend_winit::WinitWindowAccessor;
     let active = win.get_active_tab_id().to_string();
     if active == "welcome" {
         return;
