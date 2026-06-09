@@ -199,7 +199,14 @@ fn is_allowed_host(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else {
         return false;
     };
-    let host = rest.split(['/', ':']).next().unwrap_or("");
+    // authority = 第一个 '/' 之前的部分。白名单是裸主机名，因此带 userinfo('@')
+    // 或端口(':')的 authority 一律拒绝——否则 `api.github.com:8080` 或
+    // `api.github.com@evil.com` 这类伪装会绕过白名单。
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.contains('@') || authority.contains(':') {
+        return false;
+    }
+    let host = authority;
     const EXACT: &[&str] = &[
         "api.github.com",
         "github.com",
@@ -247,30 +254,40 @@ pub async fn download_and_verify(
     let expected = parse_checksums(&checksums, &rel.asset_name)
         .ok_or_else(|| anyhow!("checksums.txt has no entry for {}", rel.asset_name))?;
 
-    // 2) 流式下载到文件 + 进度。
+    // 2) 流式下载到文件 + 进度；3) 读回校验 SHA256。
+    // 任何失败（网络中断、写盘、校验不符）都清理半成品文件，避免 cache 残留坏 dmg。
     tokio::fs::create_dir_all(dest_dir).await?;
     let dest = dest_dir.join(&rel.asset_name);
-    let resp = client.get(&rel.asset_url).send().await?.error_for_status()?;
-    let total = resp.content_length().unwrap_or(rel.asset_size);
-    let mut file = tokio::fs::File::create(&dest).await?;
-    let mut downloaded: u64 = 0;
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        file.write_all(&chunk).await?;
-        downloaded += chunk.len() as u64;
-        on_progress(downloaded, total);
-    }
-    file.flush().await?;
-    drop(file);
+    let result: Result<()> = async {
+        let resp = client.get(&rel.asset_url).send().await?.error_for_status()?;
+        let total = resp.content_length().unwrap_or(rel.asset_size);
+        let mut file = tokio::fs::File::create(&dest).await?;
+        let mut downloaded: u64 = 0;
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            file.write_all(&chunk).await?;
+            downloaded += chunk.len() as u64;
+            on_progress(downloaded, total);
+        }
+        file.flush().await?;
+        drop(file);
 
-    // 3) 校验（复用 sha256_hex）。
-    let bytes = tokio::fs::read(&dest).await?;
-    if sha256_hex(&bytes).to_lowercase() != expected.to_lowercase() {
-        let _ = tokio::fs::remove_file(&dest).await;
-        bail!("checksum mismatch for {}", rel.asset_name);
+        let bytes = tokio::fs::read(&dest).await?;
+        if sha256_hex(&bytes).to_lowercase() != expected.to_lowercase() {
+            bail!("checksum mismatch for {}", rel.asset_name);
+        }
+        Ok(())
     }
-    Ok(dest)
+    .await;
+
+    match result {
+        Ok(()) => Ok(dest),
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&dest).await;
+            Err(e)
+        }
+    }
 }
 
 /// 从可执行文件路径向上找到 .app bundle 目录。
@@ -355,7 +372,9 @@ pub fn install(dmg_path: &Path) -> Result<InstallOutcome> {
     let script = build_helper_script(std::process::id(), &mount_app, &bundle, &mount_point, &script_path);
     std::fs::write(&script_path, script).context("failed to write helper script")?;
     use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700));
+    if let Err(e) = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700)) {
+        tracing::warn!("failed to chmod 700 the update helper script: {e}");
+    }
 
     Ok(InstallOutcome::ReadyToRestart { helper_script: script_path })
 }
@@ -521,6 +540,10 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  LibSSH-macos-a
         assert!(!is_allowed_host("http://api.github.com/x"));
         assert!(!is_allowed_host("https://evil.com/a.dmg"));
         assert!(!is_allowed_host("https://api.github.com.evil.com/x"));
+        // 回归保护：端口 / userinfo / 裸 apex 不得绕过白名单。
+        assert!(!is_allowed_host("https://api.github.com:8080/x"));
+        assert!(!is_allowed_host("https://api.github.com@evil.com/x"));
+        assert!(!is_allowed_host("https://githubusercontent.com/x"));
     }
 
     #[test]
