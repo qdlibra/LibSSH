@@ -225,6 +225,209 @@ fn parse_windows_apps_use_light_theme(out: &str) -> Option<bool> {
     Some(digit == '0')
 }
 
+/// 全局 CLI 符号链接管理（仅 Unix：macOS / Linux）。
+#[cfg(unix)]
+pub use cli_link::{
+    cli_link_status, disable_cli_link, enable_cli_link, local_bin_in_path, CliLinkOutcome,
+    CliLinkStatus,
+};
+
+#[cfg(unix)]
+mod cli_link {
+    use anyhow::{anyhow, Context, Result};
+    use std::path::{Path, PathBuf};
+
+    /// 链接当前状态。判别值与 ui/app.slint 的 `cli-link-state` 约定一致：
+    /// 0=未链接 1=已链接 2=失效/被占用。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CliLinkStatus {
+        NotLinked = 0,
+        Linked = 1,
+        Stale = 2,
+    }
+
+    /// 建链结果，用于 UI 反馈。
+    pub struct CliLinkOutcome {
+        pub link_path: PathBuf,
+        pub in_path: bool,
+    }
+
+    fn home() -> Result<PathBuf> {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow!("HOME 环境变量未设置"))
+    }
+    fn local_bin() -> Result<PathBuf> {
+        Ok(home()?.join(".local/bin"))
+    }
+    fn link_path() -> Result<PathBuf> {
+        Ok(local_bin()?.join("LibSSH"))
+    }
+
+    /// 检测 `~/.local/bin/LibSSH` 当前状态。任何解析失败都保守地按未链接处理。
+    pub fn cli_link_status() -> CliLinkStatus {
+        let (Ok(lp), Ok(exe)) = (link_path(), std::env::current_exe()) else {
+            return CliLinkStatus::NotLinked;
+        };
+        link_status_in(&lp, &exe)
+    }
+
+    /// 建立/重建指向当前二进制的符号链接。
+    pub fn enable_cli_link() -> Result<CliLinkOutcome> {
+        let dir = local_bin()?;
+        let lp = link_path()?;
+        let exe = std::env::current_exe().context("无法定位当前可执行文件")?;
+        std::fs::create_dir_all(&dir).with_context(|| format!("无法创建 {}", dir.display()))?;
+        enable_link_at(&lp, &exe)?;
+        Ok(CliLinkOutcome {
+            link_path: lp,
+            in_path: local_bin_in_path(),
+        })
+    }
+
+    /// 移除我们建立的符号链接。
+    pub fn disable_cli_link() -> Result<()> {
+        let lp = link_path()?;
+        disable_link_at(&lp)
+    }
+
+    /// `~/.local/bin` 是否在 PATH（仅用于提示；GUI 继承的 PATH 可能不全）。
+    pub fn local_bin_in_path() -> bool {
+        let Ok(dir) = local_bin() else {
+            return false;
+        };
+        std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|e| e == dir))
+    }
+
+    // ---- 纯函数（注入路径，便于单测）----
+
+    fn link_status_in(link_path: &Path, current_exe: &Path) -> CliLinkStatus {
+        let Ok(meta) = std::fs::symlink_metadata(link_path) else {
+            return CliLinkStatus::NotLinked;
+        };
+        if !meta.file_type().is_symlink() {
+            // 同名普通文件占位：视作需要用户处理。
+            return CliLinkStatus::Stale;
+        }
+        match std::fs::read_link(link_path) {
+            Ok(target) => {
+                let a = std::fs::canonicalize(&target).unwrap_or(target);
+                let b = std::fs::canonicalize(current_exe)
+                    .unwrap_or_else(|_| current_exe.to_path_buf());
+                if a == b {
+                    CliLinkStatus::Linked
+                } else {
+                    CliLinkStatus::Stale
+                }
+            }
+            Err(_) => CliLinkStatus::Stale,
+        }
+    }
+
+    fn enable_link_at(link_path: &Path, current_exe: &Path) -> Result<()> {
+        let parent = link_path
+            .parent()
+            .ok_or_else(|| anyhow!("链接路径没有父目录"))?;
+        // 原子替换：先建临时链接再 rename 覆盖，避免半成品。
+        let tmp = parent.join(format!(".LibSSH.tmp-{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        std::os::unix::fs::symlink(current_exe, &tmp)
+            .with_context(|| format!("无法创建符号链接 {}", tmp.display()))?;
+        std::fs::rename(&tmp, link_path)
+            .with_context(|| format!("无法替换 {}", link_path.display()))?;
+        Ok(())
+    }
+
+    fn disable_link_at(link_path: &Path) -> Result<()> {
+        let Ok(meta) = std::fs::symlink_metadata(link_path) else {
+            return Ok(()); // 本就不存在，视作已移除。
+        };
+        if !meta.file_type().is_symlink() {
+            return Err(anyhow!(
+                "{} 不是符号链接，已跳过删除以防误删",
+                link_path.display()
+            ));
+        }
+        if link_path.file_name().and_then(|s| s.to_str()) != Some("LibSSH") {
+            return Err(anyhow!("拒绝删除非 LibSSH 链接：{}", link_path.display()));
+        }
+        std::fs::remove_file(link_path).with_context(|| format!("无法删除 {}", link_path.display()))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{disable_link_at, enable_link_at, link_status_in, CliLinkStatus};
+        use std::path::{Path, PathBuf};
+
+        // 每个测试用独立临时目录，避免并行冲突；用例名作为 tag。
+        fn temp_dir(tag: &str) -> PathBuf {
+            let d = std::env::temp_dir()
+                .join(format!("libssh-clilink-{}-{}", tag, std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        }
+
+        // 造一个"真实存在"的假二进制，canonicalize 才能解析。
+        fn fake_exe(dir: &Path, name: &str) -> PathBuf {
+            let p = dir.join(name);
+            std::fs::write(&p, b"#!/bin/sh\n").unwrap();
+            p
+        }
+
+        #[test]
+        fn empty_dir_is_not_linked() {
+            let d = temp_dir("empty");
+            let exe = fake_exe(&d, "LibSSH-bin");
+            let link = d.join("LibSSH");
+            assert_eq!(link_status_in(&link, &exe), CliLinkStatus::NotLinked);
+        }
+
+        #[test]
+        fn enable_then_status_is_linked() {
+            let d = temp_dir("enable");
+            let exe = fake_exe(&d, "LibSSH-bin");
+            let link = d.join("LibSSH");
+            enable_link_at(&link, &exe).unwrap();
+            assert_eq!(link_status_in(&link, &exe), CliLinkStatus::Linked);
+        }
+
+        #[test]
+        fn link_to_other_target_is_stale_then_relinkable() {
+            let d = temp_dir("stale");
+            let exe = fake_exe(&d, "LibSSH-bin");
+            let other = fake_exe(&d, "other-bin");
+            let link = d.join("LibSSH");
+            // 先指向 other -> 相对当前 exe 应为 Stale
+            std::os::unix::fs::symlink(&other, &link).unwrap();
+            assert_eq!(link_status_in(&link, &exe), CliLinkStatus::Stale);
+            // 重链覆盖 -> Linked
+            enable_link_at(&link, &exe).unwrap();
+            assert_eq!(link_status_in(&link, &exe), CliLinkStatus::Linked);
+        }
+
+        #[test]
+        fn disable_removes_our_link() {
+            let d = temp_dir("disable");
+            let exe = fake_exe(&d, "LibSSH-bin");
+            let link = d.join("LibSSH");
+            enable_link_at(&link, &exe).unwrap();
+            disable_link_at(&link).unwrap();
+            assert_eq!(link_status_in(&link, &exe), CliLinkStatus::NotLinked);
+        }
+
+        #[test]
+        fn disable_refuses_plain_file() {
+            let d = temp_dir("plainfile");
+            let link = d.join("LibSSH");
+            std::fs::write(&link, b"not a symlink").unwrap(); // 普通文件占位
+            let err = disable_link_at(&link).unwrap_err();
+            assert!(err.to_string().contains("不是符号链接"));
+            assert!(link.exists(), "普通文件不能被删除");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
