@@ -310,6 +310,88 @@ fn build_helper_script(
     )
 }
 
+/// macOS：挂载 dmg → 生成覆盖脚本 → 返回 ReadyToRestart；
+/// 当前 app 不可写 / 非 bundle 运行 / 挂载失败时降级为引导式（打开 dmg）。
+#[cfg(target_os = "macos")]
+pub fn install(dmg_path: &Path) -> Result<InstallOutcome> {
+    use std::process::Command;
+
+    let open_dmg = |p: &Path| {
+        let _ = Command::new("/usr/bin/open").arg(p).status();
+    };
+
+    let exe = std::env::current_exe().context("cannot locate current executable")?;
+    let Some(bundle) = find_app_bundle(&exe) else {
+        open_dmg(dmg_path);
+        return Ok(InstallOutcome::GuidedManual);
+    };
+    let parent = bundle.parent().unwrap_or_else(|| Path::new("/"));
+    if !dir_is_writable(parent) {
+        open_dmg(dmg_path);
+        return Ok(InstallOutcome::GuidedManual);
+    }
+
+    let mount_point = std::env::temp_dir().join(format!("LibSSH-update-mnt-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&mount_point);
+    let attached = Command::new("/usr/bin/hdiutil")
+        .args(["attach", "-nobrowse", "-noverify", "-mountpoint"])
+        .arg(&mount_point)
+        .arg(dmg_path)
+        .status()
+        .context("hdiutil attach failed")?;
+    if !attached.success() {
+        open_dmg(dmg_path);
+        return Ok(InstallOutcome::GuidedManual);
+    }
+
+    let mount_app = mount_point.join("LibSSH.app");
+    if !mount_app.exists() {
+        let _ = Command::new("/usr/bin/hdiutil").arg("detach").arg(&mount_point).status();
+        open_dmg(dmg_path);
+        return Ok(InstallOutcome::GuidedManual);
+    }
+
+    let script_path = std::env::temp_dir().join(format!("LibSSH-update-{}.sh", std::process::id()));
+    let script = build_helper_script(std::process::id(), &mount_app, &bundle, &mount_point, &script_path);
+    std::fs::write(&script_path, script).context("failed to write helper script")?;
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700));
+
+    Ok(InstallOutcome::ReadyToRestart { helper_script: script_path })
+}
+
+/// 探测目录是否可写（用临时探针文件）。
+#[cfg(target_os = "macos")]
+fn dir_is_writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".LibSSH-write-test-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// 分离地启动辅助脚本，然后退出本进程（脚本等本进程退出后接管）。
+#[cfg(target_os = "macos")]
+pub fn run_helper_and_exit(helper_script: &Path) -> ! {
+    use std::process::{Command, Stdio};
+    let _ = Command::new("/bin/sh")
+        .arg(helper_script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    std::process::exit(0);
+}
+
+/// 其它平台：第一版不支持自动安装。
+#[cfg(not(target_os = "macos"))]
+pub fn install(_dmg_path: &Path) -> Result<InstallOutcome> {
+    bail!("auto-install is not supported on this platform yet")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
