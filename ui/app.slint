@@ -10,6 +10,7 @@ import "fonts/CascadiaMono-Bold.ttf";
 import "fonts/MaterialIcons-Regular.ttf";
 
 import { Theme } from "theme.slint";
+import { TextEdit } from "std-widgets.slint";
 import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
 import { Welcome, SessionInfo } from "welcome.slint";
@@ -92,6 +93,17 @@ export component AppWindow inherits Window {
     in-out property <bool> alert-open: false;
     in-out property <string> alert-title;
     in-out property <string> alert-message;
+    // --- In-app text editor (SFTP 远端文件) ------------------------------
+    in-out property <bool> editor-open: false;
+    in-out property <string> editor-tab-id;     // 保存时定位 SFTP handle
+    in-out property <string> editor-filename;
+    in-out property <string> editor-path;        // 远端绝对路径
+    in-out property <string> editor-content;
+    in-out property <bool> editor-dirty: false;
+    in-out property <bool> editor-confirm-discard: false;
+    in-out property <string> editor-status;
+    callback editor-save(string /* tab-id */, string /* remote-path */, string /* content */);
+    callback editor-close();
     in property <string> download-dir;      // preset SFTP download folder ("" = ask)
     in property <[TransferInfo]> transfers; // download/upload records (newest first)
     in property <[string]> about-libs;      // open-source libraries used
@@ -775,5 +787,120 @@ export component AppWindow inherits Window {
         submit(draft) => { root.session-dialog-submit(draft); }
         cancel => { root.session-dialog-cancel(); }
         pick-key-file => { root.session-dialog-pick-key(); }
+    }
+
+    // --- In-app text editor overlay (满窗，仿 About 对话框) ----------------
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        visible: root.editor-open;
+        background: #00000080;
+        // 吞掉背景点击，编辑器只能按"关闭"退出。
+        TouchArea {}
+
+        Rectangle {
+            x: 24px;
+            y: 24px;
+            width: parent.width - 48px;
+            height: parent.height - 48px;
+            background: Theme.bg-panel;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #000000a0;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                // 标题栏：脏标记 + 文件名 + 路径 + 保存/关闭。
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: (root.editor-dirty ? "● " : "") + root.editor-filename;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-md;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.editor-path;
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-xs;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 64px;
+                        height: 26px;
+                        border-radius: Theme.radius-sm;
+                        background: save-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                        save-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.editor-save(root.editor-tab-id, root.editor-path, root.editor-content);
+                            }
+                        }
+                        Text {
+                            text: @tr("Save");
+                            color: #ffffff;
+                            font-size: Theme.fs-sm;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        width: root.editor-confirm-discard ? 176px : 64px;
+                        height: 26px;
+                        border-radius: Theme.radius-sm;
+                        background: ed-close-ta.has-hover ? Theme.bg-hover : Theme.bg-panel-alt;
+                        border-width: 1px;
+                        border-color: root.editor-confirm-discard ? Theme.danger : Theme.border-subtle;
+                        ed-close-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                if (root.editor-dirty && !root.editor-confirm-discard) {
+                                    // 有未保存改动：第一次点击只提示，第二次才真正放弃。
+                                    root.editor-confirm-discard = true;
+                                } else {
+                                    root.editor-confirm-discard = false;
+                                    root.editor-close();
+                                }
+                            }
+                        }
+                        Text {
+                            text: root.editor-confirm-discard ? @tr("Unsaved · click to discard") : @tr("Close");
+                            color: root.editor-confirm-discard ? Theme.danger : Theme.text-primary;
+                            font-size: Theme.fs-sm;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // 纯文本编辑区（等宽，不换行→水平滚动）。
+                TextEdit {
+                    vertical-stretch: 1;
+                    text <=> root.editor-content;
+                    font-family: Theme.font-mono;
+                    font-size: Theme.fs-sm;
+                    wrap: no-wrap;
+                    edited => {
+                        root.editor-dirty = true;
+                        root.editor-confirm-discard = false;
+                    }
+                }
+
+                Text {
+                    text: root.editor-status;
+                    color: Theme.text-muted;
+                    font-size: Theme.fs-xs;
+                    height: 14px;
+                    overflow: elide;
+                }
+            }
+        }
     }
 }
