@@ -244,8 +244,12 @@ fn contains_sensitive_assignment(command: &str) -> bool {
         && (command.contains('=') || command.contains(':'))
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// On-disk layout. Keep additive to ease forward compatibility.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigFile {
     #[serde(default)]
     pub sessions: Vec<Session>,
@@ -258,6 +262,29 @@ pub struct ConfigFile {
     /// Local-only guardrails for CLI access by AI coding agents.
     #[serde(default)]
     pub ai_skill: AiSkillConfig,
+    /// 启动时是否自动检查更新（默认开）。
+    #[serde(default = "default_true")]
+    pub auto_check_update: bool,
+    /// 上次检查更新的 unix 时间戳（秒），用于 24h 节流。
+    #[serde(default)]
+    pub last_update_check: Option<i64>,
+    /// 用户"跳过此版本"记录的 tag，如 "v0.2.4"。
+    #[serde(default)]
+    pub skipped_version: Option<String>,
+}
+
+impl Default for ConfigFile {
+    fn default() -> Self {
+        Self {
+            sessions: Vec::new(),
+            download_dir: String::new(),
+            language: String::new(),
+            ai_skill: AiSkillConfig::default(),
+            auto_check_update: true,
+            last_update_check: None,
+            skipped_version: None,
+        }
+    }
 }
 
 pub struct ConfigStore {
@@ -347,6 +374,30 @@ impl ConfigStore {
 
     pub fn set_language(&mut self, lang: String) {
         self.cache.language = lang;
+    }
+
+    pub fn auto_check_update(&self) -> bool {
+        self.cache.auto_check_update
+    }
+
+    pub fn set_auto_check_update(&mut self, on: bool) {
+        self.cache.auto_check_update = on;
+    }
+
+    pub fn last_update_check(&self) -> Option<i64> {
+        self.cache.last_update_check
+    }
+
+    pub fn set_last_update_check(&mut self, ts: Option<i64>) {
+        self.cache.last_update_check = ts;
+    }
+
+    pub fn skipped_version(&self) -> Option<&str> {
+        self.cache.skipped_version.as_deref()
+    }
+
+    pub fn set_skipped_version(&mut self, tag: Option<String>) {
+        self.cache.skipped_version = tag;
     }
 
     pub fn ai_skill(&self) -> &AiSkillConfig {
@@ -509,6 +560,35 @@ mod tests {
         assert!(policy.evaluate_command("rm -rf /").is_err());
         assert!(policy.evaluate_command("env").is_err());
         assert!(policy.evaluate_command("echo token=abc123").is_err());
+    }
+
+    #[test]
+    fn update_settings_round_trip_and_default() {
+        let path = test_path("update-settings");
+        let mut store = ConfigStore::load_at(path.clone()).unwrap();
+        // 默认值。
+        assert!(store.auto_check_update());
+        assert_eq!(store.last_update_check(), None);
+        assert_eq!(store.skipped_version(), None);
+
+        store.set_auto_check_update(false);
+        store.set_last_update_check(Some(1_700_000_000));
+        store.set_skipped_version(Some("v0.2.4".to_string()));
+        store.save().unwrap();
+
+        let loaded = ConfigStore::load_at(path).unwrap();
+        assert!(!loaded.auto_check_update());
+        assert_eq!(loaded.last_update_check(), Some(1_700_000_000));
+        assert_eq!(loaded.skipped_version(), Some("v0.2.4"));
+    }
+
+    #[test]
+    fn legacy_config_without_update_fields_defaults_to_auto_check_on() {
+        let path = test_path("legacy-no-update-fields");
+        fs::write(&path, r#"{ "sessions": [] }"#).unwrap();
+        let loaded = ConfigStore::load_at(path).unwrap();
+        assert!(loaded.auto_check_update()); // 缺字段默认开
+        assert_eq!(loaded.skipped_version(), None);
     }
 
     #[test]

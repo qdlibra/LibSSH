@@ -8,6 +8,7 @@ mod proxy;
 mod sftp;
 mod ssh;
 mod ssh_config;
+mod updater;
 mod system;
 
 use tracing_subscriber::EnvFilter;

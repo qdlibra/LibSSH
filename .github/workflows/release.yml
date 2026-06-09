@@ -215,6 +215,12 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t files < <(find artifacts -type f)
+          # 生成 checksums.txt（sha256sum，文件名只保留 basename，供 App 自动更新校验）。
+          : > checksums.txt
+          for f in "${files[@]}"; do
+            sha256sum "$f" | awk -v name="$(basename "$f")" '{print $1 "  " name}' >> checksums.txt
+          done
+          files+=("checksums.txt")
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --repo "$REPO" --clobber
           else

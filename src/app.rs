@@ -71,6 +71,7 @@ pub fn run() -> anyhow::Result<()> {
     let window = AppWindow::new()?;
     crate::i18n::apply_to_slint();
     window.set_lang_en(crate::i18n::is_en());
+    window.set_app_version(env!("CARGO_PKG_VERSION").into());
 
     // 初始化「全局 CLI」开关状态（仅 Unix；Windows 整行隐藏）。
     #[cfg(unix)]
@@ -1635,6 +1636,237 @@ fn wire_callbacks(
             w.set_editor_confirm_discard(false);
         }
     });
+
+    // ===== 自动更新接线 =====
+    let pending_release: Arc<Mutex<Option<crate::updater::ReleaseInfo>>> = Arc::new(Mutex::new(None));
+    let pending_helper: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
+
+    fn show_release(w: &AppWindow, rel: &crate::updater::ReleaseInfo) {
+        w.set_update_current(env!("CARGO_PKG_VERSION").into());
+        w.set_update_version(rel.version.to_string().into());
+        w.set_update_notes(rel.notes.clone().into());
+        w.set_update_phase("prompt".into());
+        w.set_update_progress(0.0);
+        w.set_update_guided(false);
+        w.set_update_error("".into());
+        w.set_update_open(true);
+    }
+
+    fn updates_dir() -> std::path::PathBuf {
+        directories::ProjectDirs::from("dev", "LibSSH", "LibSSH")
+            .map(|d| d.cache_dir().join("updates"))
+            .unwrap_or_else(|| std::env::temp_dir().join("LibSSH-updates"))
+    }
+
+    // --- 启动自动检查（节流 24h）---
+    {
+        let do_check = {
+            let s = store.borrow();
+            s.auto_check_update()
+                && match s.last_update_check() {
+                    Some(last) => chrono::Utc::now().timestamp() - last >= 24 * 3600,
+                    None => true,
+                }
+        };
+        if do_check {
+            {
+                let mut s = store.borrow_mut();
+                s.set_last_update_check(Some(chrono::Utc::now().timestamp()));
+                let _ = s.save();
+            }
+            let skipped = store.borrow().skipped_version().map(|s| s.to_string());
+            let weak = window.as_weak();
+            let pending = pending_release.clone();
+            runtime.spawn(async move {
+                match crate::updater::check_for_update(env!("CARGO_PKG_VERSION"), skipped, false).await {
+                    Ok(Some(rel)) => {
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(w) = weak.upgrade() {
+                                *pending.lock().unwrap() = Some(rel.clone());
+                                show_release(&w, &rel);
+                            }
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("auto update check failed: {e:#}"),
+                }
+            });
+        }
+    }
+
+    // --- 手动检查（关于页按钮）---
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let runtime = runtime.clone();
+        let pending = pending_release.clone();
+        window.on_check_update_manual(move || {
+            let skipped = store.borrow().skipped_version().map(|s| s.to_string());
+            let weak = weak.clone();
+            let pending = pending.clone();
+            runtime.spawn(async move {
+                let res = crate::updater::check_for_update(env!("CARGO_PKG_VERSION"), skipped, true).await;
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = weak.upgrade() {
+                        match res {
+                            Ok(Some(rel)) => {
+                                *pending.lock().unwrap() = Some(rel.clone());
+                                show_release(&w, &rel);
+                            }
+                            Ok(None) => {
+                                w.set_alert_title(crate::i18n::t("检查更新", "Check for updates").into());
+                                w.set_alert_message(crate::i18n::t("已是最新版本。", "You are on the latest version.").into());
+                                w.set_alert_open(true);
+                            }
+                            Err(_) => {
+                                w.set_alert_title(crate::i18n::t("检查更新", "Check for updates").into());
+                                w.set_alert_message(crate::i18n::t("检查更新失败。", "Update check failed.").into());
+                                w.set_alert_open(true);
+                            }
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    // --- 立即更新：下载 → 校验 → 安装 ---
+    {
+        let weak = window.as_weak();
+        let runtime = runtime.clone();
+        let pending = pending_release.clone();
+        let helper = pending_helper.clone();
+        window.on_update_confirm(move || {
+            let Some(rel) = pending.lock().unwrap().clone() else { return; };
+            if let Some(w) = weak.upgrade() {
+                w.set_update_phase("downloading".into());
+                w.set_update_progress(0.0);
+            }
+            let weak = weak.clone();
+            let helper = helper.clone();
+            runtime.spawn(async move {
+                let prog_weak = weak.clone();
+                let last_pct = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+                let on_progress = move |done: u64, total: u64| {
+                    let pct = if total > 0 { done * 100 / total } else { 0 };
+                    if last_pct.swap(pct, std::sync::atomic::Ordering::Relaxed) != pct {
+                        let prog_weak = prog_weak.clone();
+                        let frac = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(w) = prog_weak.upgrade() {
+                                w.set_update_progress(frac);
+                            }
+                        });
+                    }
+                };
+
+                let dl = crate::updater::download_and_verify(&rel, &updates_dir(), on_progress).await;
+
+                match dl {
+                    Ok(dmg) => {
+                        let vweak = weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(w) = vweak.upgrade() { w.set_update_phase("verifying".into()); }
+                        });
+                        let install = tokio::task::spawn_blocking(move || crate::updater::install(&dmg)).await;
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(w) = weak.upgrade() {
+                                match install {
+                                    Ok(Ok(crate::updater::InstallOutcome::ReadyToRestart { helper_script })) => {
+                                        *helper.lock().unwrap() = Some(helper_script);
+                                        w.set_update_guided(false);
+                                        w.set_update_phase("ready".into());
+                                    }
+                                    Ok(Ok(crate::updater::InstallOutcome::GuidedManual)) => {
+                                        *helper.lock().unwrap() = None;
+                                        w.set_update_guided(true);
+                                        w.set_update_notes(crate::i18n::t(
+                                            "请将 LibSSH 拖到「应用程序」文件夹以完成更新。",
+                                            "Drag LibSSH into the Applications folder to finish updating.",
+                                        ).into());
+                                        w.set_update_phase("ready".into());
+                                    }
+                                    _ => {
+                                        w.set_update_error(crate::i18n::t("安装失败。", "Install failed.").into());
+                                        w.set_update_phase("error".into());
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!("download failed: {e:#}");
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(w) = weak.upgrade() {
+                                w.set_update_error(crate::i18n::t("下载或校验失败。", "Download or verification failed.").into());
+                                w.set_update_phase("error".into());
+                            }
+                        });
+                    }
+                }
+            });
+        });
+    }
+
+    // --- 稍后 ---
+    {
+        let weak = window.as_weak();
+        window.on_update_later(move || {
+            if let Some(w) = weak.upgrade() { w.set_update_open(false); }
+        });
+    }
+
+    // --- 跳过此版本 ---
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let pending = pending_release.clone();
+        window.on_update_skip(move || {
+            if let Some(rel) = pending.lock().unwrap().clone() {
+                let mut s = store.borrow_mut();
+                s.set_skipped_version(Some(rel.tag.clone()));
+                let _ = s.save();
+            }
+            if let Some(w) = weak.upgrade() { w.set_update_open(false); }
+        });
+    }
+
+    // --- 重启 / 完成 ---
+    {
+        let weak = window.as_weak();
+        let helper = pending_helper.clone();
+        window.on_update_restart(move || {
+            if let Some(_script) = helper.lock().unwrap().clone() {
+                #[cfg(target_os = "macos")]
+                crate::updater::run_helper_and_exit(&_script); // 不返回，进程被替换
+            }
+            if let Some(w) = weak.upgrade() { w.set_update_open(false); }
+        });
+    }
+
+    // --- 重试 ---
+    {
+        let weak = window.as_weak();
+        window.on_update_retry(move || {
+            if let Some(w) = weak.upgrade() {
+                w.set_update_error("".into());
+                w.set_update_phase("prompt".into());
+            }
+        });
+    }
+
+    // --- 去发布页 ---
+    {
+        window.on_update_open_release(move || {
+            let url = "https://github.com/qdlibra/LibSSH/releases/latest";
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
+            #[cfg(target_os = "windows")]
+            let _ = std::process::Command::new("cmd").args(["/C", "start", url]).spawn();
+            #[cfg(all(unix, not(target_os = "macos")))]
+            let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+        });
+    }
 }
 
 fn remove_model_row<T: Clone + 'static>(

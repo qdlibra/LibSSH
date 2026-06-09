@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["LibSSH contributors"]
 description = "A lightweight FinalShell-style SSH/terminal client written in Rust + Slint"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/your/LibSSH"
+repository = "https://github.com/qdlibra/LibSSH"
 readme = "README.md"
 rust-version = "1.75"
 
@@ -41,6 +41,11 @@ zeroize = "1"
 # (HTTP CONNECT proxies are handled in src/proxy.rs without an extra crate.)
 tokio-socks = "0.5"
 base64 = "0.22"
+# Auto-update: GitHub API 检测 + 流式下载 + 完整性校验。
+# rustls-tls 避免 OpenSSL 系统依赖（与 russh 的 RustCrypto 栈一致）。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+semver = "1"
+sha2 = "0.10"
 
 [build-dependencies]
 slint-build = "1.8"
