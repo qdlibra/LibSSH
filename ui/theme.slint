@@ -1,14 +1,18 @@
-import { Palette } from "std-widgets.slint";
-
 // Central design tokens for LibSSH.
 // Keep these aligned with docs/UI guidelines.
 
 export global Theme {
     // 0 = follow system, 1 = light, 2 = dark.
     in-out property <int> mode: 0;
+    // True OS appearance, detected in Rust (src/system.rs) and pushed in via
+    // `window.global::<Theme>().set_system_is_dark(..)`. We can't rely on
+    // `Palette.color-scheme` here: the light/dark buttons write to it, which
+    // permanently stops it reflecting the system, and an un-forced value reads
+    // back as `unknown` — which the old `!= light` test wrongly rendered as dark.
+    in property <bool> system-is-dark: false;
     out property <bool> is-dark: mode == 2 ? true
                                : mode == 1 ? false
-                               : Palette.color-scheme != ColorScheme.light;
+                               : system-is-dark;
 
     // --- Palette -----------------------------------------------------------
     out property <brush> bg-root: is-dark ? #1b1d23 : #f4f6f8;

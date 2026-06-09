@@ -138,6 +138,93 @@ pub fn format_bytes_per_sec(bytes: u64) -> String {
     }
 }
 
+/// Detect whether the OS is currently using a dark appearance.
+///
+/// Returns `None` when the platform preference can't be determined, so the
+/// caller can leave the current theme choice untouched rather than guessing.
+pub fn detect_dark_mode() -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        // `defaults read -g AppleInterfaceStyle` prints "Dark" in dark mode and
+        // exits non-zero (key absent) in light mode.
+        let out = std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .output()
+            .ok()?;
+        Some(
+            out.status.success()
+                && String::from_utf8_lossy(&out.stdout)
+                    .to_lowercase()
+                    .contains("dark"),
+        )
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Registry: AppsUseLightTheme — 0x0 = dark, 0x1 = light.
+        let out = std::process::Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                "/v",
+                "AppsUseLightTheme",
+            ])
+            .output()
+            .ok()?;
+        parse_windows_apps_use_light_theme(&String::from_utf8_lossy(&out.stdout))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Freedesktop / GNOME: `gsettings get org.gnome.desktop.interface color-scheme`
+        // → 'prefer-dark' | 'default' | 'prefer-light'. Fall back to the GTK theme
+        // name when the color-scheme key is unavailable (older desktops).
+        if let Ok(out) = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+            .output()
+        {
+            if out.status.success() {
+                if let Some(dark) = parse_gnome_color_scheme(&String::from_utf8_lossy(&out.stdout)) {
+                    return Some(dark);
+                }
+            }
+        }
+        if let Ok(out) = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "gtk-theme"])
+            .output()
+        {
+            if out.status.success() {
+                return Some(
+                    String::from_utf8_lossy(&out.stdout)
+                        .to_lowercase()
+                        .contains("dark"),
+                );
+            }
+        }
+        None
+    }
+}
+
+/// Parse `org.gnome.desktop.interface color-scheme`: `Some(true)` = dark,
+/// `Some(false)` = light/default, `None` = unrecognised.
+#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+fn parse_gnome_color_scheme(value: &str) -> Option<bool> {
+    let v = value.trim().trim_matches('\'').to_lowercase();
+    if v.contains("dark") {
+        Some(true)
+    } else if v.contains("light") || v.contains("default") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Parse `reg query … AppsUseLightTheme` output: `0x0` = dark, `0x1` = light.
+#[cfg(any(test, target_os = "windows"))]
+fn parse_windows_apps_use_light_theme(out: &str) -> Option<bool> {
+    let idx = out.find("0x")?;
+    let digit = out[idx + 2..].trim_start().chars().next()?;
+    Some(digit == '0')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +234,26 @@ mod tests {
         assert_eq!(format_bytes_per_sec(512), "512 B/s");
         assert_eq!(format_bytes_per_sec(1536), "1.5 KB/s");
         assert_eq!(format_bytes_per_sec(1024 * 1024), "1.0 MB/s");
+    }
+
+    #[test]
+    fn parses_gnome_color_scheme_values() {
+        assert_eq!(parse_gnome_color_scheme("'prefer-dark'\n"), Some(true));
+        assert_eq!(parse_gnome_color_scheme("'prefer-light'"), Some(false));
+        assert_eq!(parse_gnome_color_scheme("'default'\n"), Some(false));
+        assert_eq!(parse_gnome_color_scheme("'mystery'"), None);
+    }
+
+    #[test]
+    fn parses_windows_theme_flag() {
+        assert_eq!(
+            parse_windows_apps_use_light_theme("    AppsUseLightTheme    REG_DWORD    0x0\r\n"),
+            Some(true)
+        );
+        assert_eq!(
+            parse_windows_apps_use_light_theme("    AppsUseLightTheme    REG_DWORD    0x1\r\n"),
+            Some(false)
+        );
+        assert_eq!(parse_windows_apps_use_light_theme("nothing"), None);
     }
 }

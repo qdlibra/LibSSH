@@ -9,6 +9,7 @@ export struct SessionInfo {
     user: string,
     auth: string,      // "password" | "key"
     last-used: string, // ISO timestamp or "never"
+    latency: int,      // round-trip ms; -1 = probing, -2 = unreachable/timeout
 }
 
 component SessionActionButton inherits Rectangle {
@@ -77,6 +78,24 @@ component SessionRow inherits Rectangle {
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
+        }
+
+        // Latency probe, colour-graded: <400ms green, 400–800ms amber, >800ms red.
+        // -1 = still probing, -2 = unreachable / timed out.
+        Text {
+            text: session.latency == -1 ? "···"
+                : session.latency == -2 ? @tr("timeout")
+                : "\{session.latency}ms";
+            color: session.latency == -1 ? Theme.text-muted
+                 : session.latency == -2 ? Theme.danger
+                 : session.latency < 400 ? Theme.success
+                 : session.latency < 800 ? Theme.warning
+                 : Theme.danger;
+            font-family: Theme.font-mono;
+            font-size: Theme.fs-xs;
+            width: 52px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
         }
 
         Text {

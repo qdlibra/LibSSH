@@ -17,7 +17,7 @@ import { SessionDialog, SessionDraft } from "session_dialog.slint";
 import { TerminalView, TermSpan, TermMatch } from "terminal_view.slint";
 import { SftpEntry, SftpTreeNode } from "sftp_panel.slint";
 
-export { SessionInfo, SessionDraft, TabInfo, SftpEntry, SftpTreeNode }
+export { SessionInfo, SessionDraft, TabInfo, SftpEntry, SftpTreeNode, Theme }
 
 // --- TerminalState ---------------------------------------------------------
 // Per-terminal view-model exposed to Rust. A TabInfo has the metadata; the
@@ -129,6 +129,7 @@ export component AppWindow inherits Window {
     callback connect-session(string /* session-id */);
     callback edit-session(string /* session-id */);
     callback remove-session(string /* session-id */);
+    callback probe-latencies();               // (re)measure quick-connect latencies
     callback session-dialog-submit(SessionDraft);
     callback session-dialog-cancel();
     callback session-dialog-pick-key();

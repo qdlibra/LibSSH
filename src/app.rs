@@ -419,9 +419,61 @@ fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<SessionInfo>) {
                 .clone()
                 .unwrap_or_else(|| "never".to_string())
                 .into(),
+            latency: -1,
         })
         .collect();
     model.set_vec(rows);
+}
+
+/// Measure TCP connect time to `host:port`, in milliseconds.
+/// `-2` signals unreachable / timed out (caller renders it red).
+async fn measure_latency(host: &str, port: u16) -> i32 {
+    let start = std::time::Instant::now();
+    let connect = tokio::net::TcpStream::connect((host, port));
+    match tokio::time::timeout(std::time::Duration::from_secs(3), connect).await {
+        Ok(Ok(_stream)) => start.elapsed().as_millis().min(i32::MAX as u128) as i32,
+        _ => -2,
+    }
+}
+
+/// Spawn one async TCP-latency probe per session and write each result back into
+/// the quick-connect model on the UI thread as it lands.
+fn spawn_latency_probes(
+    runtime: &Arc<Runtime>,
+    weak: slint::Weak<AppWindow>,
+    targets: Vec<(String, String, u16)>,
+) {
+    for (id, host, port) in targets {
+        if host.is_empty() {
+            continue;
+        }
+        let weak = weak.clone();
+        runtime.spawn(async move {
+            let ms = measure_latency(&host, port).await;
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w) = weak.upgrade() {
+                    set_session_latency(&w, &id, ms);
+                }
+            });
+        });
+    }
+}
+
+/// Update a single quick-connect row's latency by session id.
+fn set_session_latency(win: &AppWindow, id: &str, ms: i32) {
+    let sessions = win.get_sessions();
+    let Some(model) = sessions.as_any().downcast_ref::<VecModel<SessionInfo>>() else {
+        return;
+    };
+    for i in 0..model.row_count() {
+        if let Some(mut row) = model.row_data(i) {
+            if row.id.as_str() == id {
+                row.latency = ms;
+                model.set_row_data(i, row);
+                break;
+            }
+        }
+    }
 }
 
 fn wire_callbacks(
@@ -441,6 +493,47 @@ fn wire_callbacks(
     let sessions_model = models.sessions.clone();
     let tabs_model = models.tabs.clone();
     let terminals_model = models.terminals.clone();
+
+    // --- Theme: follow the OS appearance (issue #2) -----------------------
+    // `Palette.color-scheme` can't be trusted for *reading* the system theme
+    // (writing it breaks detection; left unforced it reads back `unknown`).
+    // Detect the real setting in Rust off the UI thread and push it into the
+    // Theme global every few seconds so "follow system" tracks live changes.
+    {
+        let weak = window.as_weak();
+        runtime.spawn(async move {
+            loop {
+                let dark = tokio::task::spawn_blocking(crate::system::detect_dark_mode)
+                    .await
+                    .ok()
+                    .flatten();
+                if let Some(d) = dark {
+                    let weak = weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = weak.upgrade() {
+                            w.global::<Theme>().set_system_is_dark(d);
+                        }
+                    });
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+        });
+    }
+
+    // --- Quick-connect latency probes (issue #3) --------------------------
+    let latency_runtime = runtime.clone();
+    let latency_store = store.clone();
+    let latency_weak = window.as_weak();
+    window.on_probe_latencies(move || {
+        let targets: Vec<(String, String, u16)> = latency_store
+            .borrow()
+            .sessions()
+            .iter()
+            .map(|s| (s.id.clone(), s.host.clone(), s.port))
+            .collect();
+        spawn_latency_probes(&latency_runtime, latency_weak.clone(), targets);
+    });
+    window.invoke_probe_latencies();
 
     let weak = window.as_weak();
     let new_tab_statuses = tab_statuses.clone();
@@ -540,6 +633,7 @@ fn wire_callbacks(
 
         sync_sessions_to_model(&import_store.borrow(), &import_sessions);
         if let Some(w) = weak.upgrade() {
+            w.invoke_probe_latencies();
             let hint = if added > 0 {
                 format!("{} {}", crate::i18n::t("已导入", "imported"), added)
             } else {
@@ -585,6 +679,7 @@ fn wire_callbacks(
         sync_sessions_to_model(&remove_store.borrow(), &remove_sessions);
         if let Some(w) = weak.upgrade() {
             let _ = w.get_sessions();
+            w.invoke_probe_latencies();
         }
     });
 
@@ -636,6 +731,7 @@ fn wire_callbacks(
         sync_sessions_to_model(&submit_store.borrow(), &submit_sessions);
         if let Some(w) = weak.upgrade() {
             w.set_dialog_open(false);
+            w.invoke_probe_latencies();
         }
     });
 
@@ -942,16 +1038,33 @@ fn wire_callbacks(
     let resize_bufs = bufs.clone();
     let resize_last_size = last_term_size.clone();
     let resize_weak = window.as_weak();
+    // Debounce PTY resizes. Dragging the SFTP divider (or any rapid relayout)
+    // fires a burst of size changes; applying each one floods the remote with
+    // SIGWINCH and makes the shell reprint its prompt over and over — the
+    // "multiple blank prompt lines" bug. Collapse a burst into one resize ~90ms
+    // after the last change; resize_terminal_buffer then no-ops if the grid is
+    // unchanged.
+    let resize_debounce = Timer::default();
     window.on_terminal_resize(move |tab_id: SharedString, cols_f: f32, rows_f: f32| {
         let tid = tab_id.to_string();
-        let (cols, rows, should_rebuild) =
-            resize_terminal_buffer(&tid, cols_f, rows_f, &resize_bufs, &resize_last_size);
-        if let Some(handle) = resize_handles.borrow().get(tab_id.as_str()) {
-            handle.resize(cols, rows);
-        }
-        if should_rebuild {
-            schedule_terminal_display_rebuild(resize_weak.clone(), resize_bufs.clone(), tid);
-        }
+        let handles = resize_handles.clone();
+        let bufs = resize_bufs.clone();
+        let last_size = resize_last_size.clone();
+        let weak = resize_weak.clone();
+        resize_debounce.start(
+            TimerMode::SingleShot,
+            std::time::Duration::from_millis(90),
+            move || {
+                let (cols, rows, applied) =
+                    resize_terminal_buffer(&tid, cols_f, rows_f, &bufs, &last_size);
+                if applied {
+                    if let Some(handle) = handles.borrow().get(tid.as_str()) {
+                        handle.resize(cols, rows);
+                    }
+                    schedule_terminal_display_rebuild(weak.clone(), bufs.clone(), tid.clone());
+                }
+            },
+        );
     });
 
     let send_handles = handles.clone();
@@ -1937,9 +2050,15 @@ fn resize_terminal_buffer(
     let rows = (rows_f as u32).max(5);
     *last_size.lock().unwrap() = (cols, rows);
 
-    let mut should_rebuild = false;
+    let mut applied = false;
     if let Some(buf) = bufs.lock().unwrap().get_mut(tab_id) {
-        let old_rows = buf.parser.screen().size().0;
+        let (old_rows, old_cols) = buf.parser.screen().size();
+        // Already at the requested grid: do nothing. Skipping the redundant
+        // window_change + reflow stops the remote shell from reprinting its
+        // prompt (the "multiple blank lines while dragging the file manager" bug).
+        if old_rows == rows as u16 && old_cols == cols as u16 {
+            return (cols, rows, false);
+        }
         if (rows as u16) < old_rows && !buf.parser.screen().alternate_screen() {
             let delta = old_rows - rows as u16;
             let cols_now = buf.parser.screen().size().1;
@@ -1959,10 +2078,10 @@ fn resize_terminal_buffer(
         }
         buf.parser.set_size(rows as u16, cols as u16);
         buf.prev.clear();
-        should_rebuild = true;
+        applied = true;
     }
 
-    (cols, rows, should_rebuild)
+    (cols, rows, applied)
 }
 
 fn schedule_terminal_display_rebuild(
