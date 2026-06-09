@@ -227,10 +227,7 @@ fn parse_windows_apps_use_light_theme(out: &str) -> Option<bool> {
 
 /// 全局 CLI 符号链接管理（仅 Unix：macOS / Linux）。
 #[cfg(unix)]
-pub use cli_link::{
-    cli_link_status, disable_cli_link, enable_cli_link, local_bin_in_path, CliLinkOutcome,
-    CliLinkStatus,
-};
+pub use cli_link::{cli_link_status, disable_cli_link, enable_cli_link};
 
 #[cfg(unix)]
 mod cli_link {

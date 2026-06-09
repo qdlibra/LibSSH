@@ -72,6 +72,15 @@ pub fn run() -> anyhow::Result<()> {
     crate::i18n::apply_to_slint();
     window.set_lang_en(crate::i18n::is_en());
 
+    // 初始化「全局 CLI」开关状态（仅 Unix；Windows 整行隐藏）。
+    #[cfg(unix)]
+    {
+        window.set_cli_link_supported(true);
+        window.set_cli_link_state(crate::system::cli_link_status() as i32);
+    }
+    #[cfg(not(unix))]
+    window.set_cli_link_supported(false);
+
     let models = initialise_models(&window, &store.borrow());
     let handles: Rc<RefCell<HashMap<String, SessionHandle>>> =
         Rc::new(RefCell::new(HashMap::new()));
@@ -1388,6 +1397,60 @@ fn wire_callbacks(
             w.set_resource_title(crate::i18n::t("本机资源", "Local resources").into());
         }
     });
+
+    // 「全局 CLI」开关：建链/重链/移除 ~/.local/bin/LibSSH（仅 Unix）。
+    #[cfg(unix)]
+    {
+        let weak = window.as_weak();
+        window.on_toggle_cli_link(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            // 双语「失败」反馈（disable / enable 两个 Err 分支共用）。
+            let fmt_err = |err: &anyhow::Error| -> String {
+                if crate::i18n::is_en() {
+                    format!("Failed: {err}")
+                } else {
+                    format!("失败：{err}")
+                }
+            };
+            // 1=Linked → 移除；0=未链接 / 2=Stale（过期链接）→ 重建。
+            let linked = w.get_cli_link_state() == 1;
+            let feedback = if linked {
+                match crate::system::disable_cli_link() {
+                    Ok(()) => {
+                        crate::i18n::t("已移除全局 CLI 链接", "Global CLI link removed").to_string()
+                    }
+                    Err(err) => fmt_err(&err),
+                }
+            } else {
+                match crate::system::enable_cli_link() {
+                    Ok(outcome) => {
+                        let path = outcome.link_path.display();
+                        if outcome.in_path {
+                            if crate::i18n::is_en() {
+                                format!("Linked at {path}")
+                            } else {
+                                format!("已链接到 {path}")
+                            }
+                        } else if crate::i18n::is_en() {
+                            format!(
+                                "Linked at {path}\n~/.local/bin is not on PATH. Add to ~/.zshrc:\nexport PATH=\"$HOME/.local/bin:$PATH\""
+                            )
+                        } else {
+                            format!(
+                                "已链接到 {path}\n~/.local/bin 不在 PATH，请加入 ~/.zshrc：\nexport PATH=\"$HOME/.local/bin:$PATH\""
+                            )
+                        }
+                    }
+                    Err(err) => fmt_err(&err),
+                }
+            };
+            // 重新读取文件系统状态作为真相源，并写回反馈。
+            w.set_cli_link_state(crate::system::cli_link_status() as i32);
+            w.set_cli_link_feedback(feedback.into());
+        });
+    }
 
     let weak = window.as_weak();
     let download_store = store.clone();
