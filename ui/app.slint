@@ -550,9 +550,9 @@ export component AppWindow inherits Window {
         x: parent.width - 196px;
         y: 40px;
         width: 198px;
-        // 高度随可见项数自适应：104=3 项基准；133=显示 CLI 行（+1 项）；196=再带多行反馈。
+        // 高度随可见项数自适应：104=3 项基准；133=显示 CLI 行（+1 项）；220=再带多行反馈（含长路径换行余量）。
         height: root.cli-link-supported
-            ? (root.cli-link-feedback != "" ? 196px : 133px)
+            ? (root.cli-link-feedback != "" ? 220px : 133px)
             : 104px;
         visible: root.settings-open;
         background: Theme.bg-panel;

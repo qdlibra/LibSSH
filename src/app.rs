@@ -1435,11 +1435,11 @@ fn wire_callbacks(
                             }
                         } else if crate::i18n::is_en() {
                             format!(
-                                "Linked at {path}\n~/.local/bin is not on PATH. Add to ~/.zshrc:\nexport PATH=\"$HOME/.local/bin:$PATH\""
+                                "Linked at {path}\n~/.local/bin is not on PATH. Add to your shell profile (e.g. ~/.zshrc):\nexport PATH=\"$HOME/.local/bin:$PATH\""
                             )
                         } else {
                             format!(
-                                "已链接到 {path}\n~/.local/bin 不在 PATH，请加入 ~/.zshrc：\nexport PATH=\"$HOME/.local/bin:$PATH\""
+                                "已链接到 {path}\n~/.local/bin 不在 PATH，请加入你的 shell 配置（如 ~/.zshrc）：\nexport PATH=\"$HOME/.local/bin:$PATH\""
                             )
                         }
                     }
