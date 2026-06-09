@@ -160,6 +160,12 @@ pub enum SessionEvent {
         entries: Vec<RemoteEntry>,
     },
     SftpStatus(String),
+    /// 一次目录列举以失败告终（连接/认证失败、权限不足、路径不存在等）。
+    /// 携带错误文案。与 `SftpEntries`（成功）配对：二者都必须复位前端的
+    /// `sftp_loading`，否则 `sftp_loading` 会变成只进不出的陷阱状态 ——
+    /// SFTP 面板永久停在「加载中…」，连刷新都救不回来（刷新只是重跑同一次
+    /// 失败的 read_dir）。
+    SftpLoadFailed(String),
     SftpFileContent {
         remote: String,
         filename: String,

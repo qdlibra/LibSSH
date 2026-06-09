@@ -109,7 +109,9 @@ pub fn spawn_sftp(
     let events_err = events.clone();
     let join = runtime.spawn(async move {
         if let Err(err) = run_sftp(session, cmd_rx, events).await {
-            let _ = events_err.send(SessionEvent::SftpStatus(format!(
+            // 连接/认证/握手失败：tab 初始化时 sftp_loading=true，这里必须发
+            // SftpLoadFailed 复位，否则面板卡在「加载中…」。
+            let _ = events_err.send(SessionEvent::SftpLoadFailed(format!(
                 "{}: {err:#}",
                 t("SFTP 错误", "SFTP error")
             )));
@@ -198,7 +200,8 @@ async fn run_sftp(
             let _ = events.send(SessionEvent::SftpStatus(home.clone()));
         }
         Err(e) => {
-            let _ = events.send(SessionEvent::SftpStatus(format!(
+            // 初始 home 目录列举失败：同样复位 loading，而非只更新状态文本。
+            let _ = events.send(SessionEvent::SftpLoadFailed(format!(
                 "{}: {e}",
                 t("SFTP 错误", "SFTP error")
             )));
@@ -251,7 +254,10 @@ async fn run_sftp(
                         let _ = events.send(SessionEvent::SftpStatus(path));
                     }
                     Err(e) => {
-                        let _ = events.send(SessionEvent::SftpStatus(format!(
+                        // 后续 ListDir 失败（如终端 cd 进了 SFTP 用户无权访问的
+                        // 目录）：发 SftpLoadFailed 复位 loading 并回显原因，否则
+                        // 面板永久「加载中…」，且刷新会重复同一次失败、毫无反馈。
+                        let _ = events.send(SessionEvent::SftpLoadFailed(format!(
                             "{}: {e}",
                             t("列目录失败", "list directory failed")
                         )));

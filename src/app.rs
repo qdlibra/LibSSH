@@ -903,7 +903,7 @@ fn wire_callbacks(
                             .ok()
                             .and_then(|m| m.get(&shell_tab_id).copied())
                             .unwrap_or(false);
-                        if !is_manual {
+                        if sftp_should_follow_cwd(is_manual) {
                             if let Some(prev) = cwd_debounce.take() {
                                 prev.abort();
                             }
@@ -918,6 +918,11 @@ fn wire_callbacks(
                                     }
                                 }
                             }));
+                        } else {
+                            // 手动导航模式：不自动跟随终端 cwd。直接丢弃此 CwdChanged，
+                            // 不透传给 UI —— 否则 apply 会把 sftp_loading 置 true 却无人
+                            // 复位（上面已跳过 list_dir），面板永久停在「加载中…」。
+                            continue;
                         }
                     }
                     let weak_evt = weak_events.clone();
@@ -1766,6 +1771,28 @@ fn selected_iface(st: &TabStatus) -> (String, u64, u64) {
     st.net.first().cloned().unwrap_or_default()
 }
 
+/// 终端报告的工作目录变化是否应驱动 SFTP 面板「自动跟随」（重新列目录）。
+///
+/// 手动模式（用户已在面板里双击进目录 / 展开过目录树）下返回 `false`：此时
+/// 终端 `cd` 不得触碰 SFTP 面板 —— 既不重新列目录，也不把 `CwdChanged` 透传
+/// 给 UI。后者尤其关键：UI 的 `CwdChanged` 处理会无条件把 `sftp_loading` 置
+/// `true`，若这里放行透传却又跳过了 `list_dir`，就再没有 `SftpEntries` /
+/// `SftpLoadFailed` 来复位它，面板会永久停在「加载中…」。
+fn sftp_should_follow_cwd(is_manual_nav: bool) -> bool {
+    !is_manual_nav
+}
+
+/// 该事件是否标志「一次目录加载的终结」（成功或失败），因而必须把
+/// `sftp_loading` 复位为 `false`。这是守护「loading 不是只进不出的陷阱状态」
+/// 这一不变量的单一判定点：凡是会把 `sftp_loading` 置 `true` 的加载，最终都
+/// 应收到一个 settled 事件让它落回 `false`。新增加载结束类事件时，必须在此登记。
+fn settles_sftp_loading(event: &SessionEvent) -> bool {
+    matches!(
+        event,
+        SessionEvent::SftpEntries { .. } | SessionEvent::SftpLoadFailed(_)
+    )
+}
+
 fn apply_session_event_to_window(
     win: &AppWindow,
     tab_id: &str,
@@ -1810,6 +1837,11 @@ fn apply_session_event_to_window(
             }
         }
     };
+
+    // 在 match 消费 event 前算好：本事件是否「终结」一次目录加载。终结事件
+    // （成功 SftpEntries / 失败 SftpLoadFailed）统一在 match 之后复位
+    // sftp_loading，确保失败路径也能解除「加载中…」，不再只进不出。
+    let settles_loading = settles_sftp_loading(&event);
 
     match event {
         SessionEvent::Status(status) => {
@@ -1936,8 +1968,14 @@ fn apply_session_event_to_window(
             update_terminal(&|t| {
                 t.sftp_path = path.clone().into();
                 t.sftp_entries = model.clone();
-                t.sftp_loading = false;
             });
+            // sftp_loading 的复位交由 match 之后的统一 settled 处理。
+        }
+        SessionEvent::SftpLoadFailed(msg) => {
+            // 目录加载失败：回显错误原因，保留用户当前正在看的列表不动。
+            // loading 的复位同样交由统一 settled 处理 —— 这正是「刷新不了、
+            // 一直加载中」的修复点：失败不再把面板永久卡在加载态。
+            update_terminal(&|t| t.sftp_status = msg.clone().into());
         }
         SessionEvent::SftpStatus(msg) => {
             update_terminal(&|t| t.sftp_status = msg.clone().into());
@@ -2029,6 +2067,14 @@ fn apply_session_event_to_window(
                 }
             }
         }
+    }
+
+    // 统一复位：凡「终结一次目录加载」的事件（成功 SftpEntries 或失败
+    // SftpLoadFailed）都在这唯一出口把 sftp_loading 落回 false。单一出口确保
+    // 不会再出现「置了 true 却没人复位」的陷阱状态 —— 这是「文件管理器一直
+    // 加载中、刷新不了」的根因防线。
+    if settles_loading {
+        update_terminal(&|t| t.sftp_loading = false);
     }
 }
 
@@ -2785,5 +2831,32 @@ mod tests {
 
         assert_eq!((cols, rows), (80, 24));
         assert!(!applied, "网格未变时必须短路，不得重复 resize");
+    }
+
+    #[test]
+    fn sftp_follows_terminal_cwd_only_when_not_manually_navigated() {
+        // 自动模式：终端 cd 应驱动 SFTP 面板跟随（置 loading 并重新列目录）。
+        assert!(sftp_should_follow_cwd(false));
+        // 手动模式：用户已在面板里自行导航，终端 cd 不得触碰面板 —— 否则会把
+        // sftp_loading 置 true 却无人复位（list_dir 被跳过），永久停在「加载中…」。
+        assert!(!sftp_should_follow_cwd(true));
+    }
+
+    #[test]
+    fn sftp_loading_settles_on_success_and_failure_but_not_on_progress() {
+        // 不变量：能复位 sftp_loading 的，只有「加载终结」事件 —— 成功与失败都算。
+        // 失败也必须复位，正是「刷新不了、一直加载中」的修复核心。
+        assert!(settles_sftp_loading(&SessionEvent::SftpEntries {
+            path: "/home".into(),
+            entries: Vec::new(),
+        }));
+        assert!(settles_sftp_loading(&SessionEvent::SftpLoadFailed(
+            "list directory failed: permission denied".into()
+        )));
+        // 发起加载 / 中途进度 / 无关状态都不得复位，否则会过早消除「加载中…」。
+        assert!(!settles_sftp_loading(&SessionEvent::CwdChanged("/root".into())));
+        assert!(!settles_sftp_loading(&SessionEvent::SftpStatus(
+            "Loading /home...".into()
+        )));
     }
 }
