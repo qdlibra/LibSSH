@@ -119,6 +119,23 @@ export component AppWindow inherits Window {
     in property <string> download-dir;      // preset SFTP download folder ("" = ask)
     in property <[TransferInfo]> transfers; // download/upload records (newest first)
     in property <[string]> about-libs;      // open-source libraries used
+    // --- App version & update dialog --------------------------------------
+    in property <string> app-version;            // e.g. "0.2.3"
+    in-out property <bool> update-open: false;
+    in property <string> update-version;         // 新版本号 "0.2.4"
+    in property <string> update-current;         // 当前版本 "0.2.3"
+    in property <string> update-notes;           // release notes
+    in property <string> update-phase: "prompt"; // prompt|downloading|verifying|ready|error
+    in property <float> update-progress;         // 0.0 - 1.0
+    in property <string> update-error;
+    in property <bool> update-guided;            // true=引导式(方案A)
+    callback update-confirm();
+    callback update-later();
+    callback update-skip();
+    callback update-restart();
+    callback update-retry();
+    callback update-open-release();
+    callback check-update-manual();
     in-out property <bool> lang-en: false;  // current UI language (false = 中文)
     in-out property <length> sftp-panel-height: 220px; // shared; lets Rust locate the drop zone
     callback pick-download-dir();            // open a folder picker
@@ -751,6 +768,33 @@ export component AppWindow inherits Window {
                     color: Theme.text-muted;
                     font-size: Theme.fs-xs;
                 }
+                Text {
+                    text: "v" + root.app-version;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                }
+                Rectangle {
+                    height: 30px;
+                    width: 112px;
+                    border-radius: Theme.radius-sm;
+                    background: check-upd-ta.has-hover ? Theme.bg-hover : Theme.bg-panel;
+                    border-width: 1px;
+                    border-color: Theme.border-strong;
+                    check-upd-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.about-open = false;
+                            root.check-update-manual();
+                        }
+                    }
+                    Text {
+                        text: @tr("Check for updates");
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-sm;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
 
                 Rectangle { height: 1px; background: Theme.border-subtle; }
 
@@ -773,6 +817,152 @@ export component AppWindow inherits Window {
                             font-size: Theme.fs-xs;
                             wrap: no-wrap;
                             overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Update dialog (centered, dim backdrop) ---------------------------
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        visible: root.update-open;
+        background: #00000080;
+        TouchArea {} // 吞背景点击：更新对话框只能按按钮关闭
+
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 420px;
+            height: 460px;
+            background: Theme.bg-panel;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #000000a0;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
+
+                Text {
+                    text: @tr("New version available");
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-lg;
+                    font-weight: 700;
+                }
+                Text {
+                    text: "v" + root.update-current + "  →  v" + root.update-version;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                }
+
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                // 更新说明（可滚动）
+                Flickable {
+                    vertical-stretch: 1;
+                    viewport-width: self.width;
+                    viewport-height: max(self.height, notes-text.preferred-height);
+                    notes-text := Text {
+                        text: root.update-notes;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-sm;
+                        wrap: word-wrap;
+                    }
+                }
+
+                // 进度 / 错误区
+                if root.update-phase == "downloading" || root.update-phase == "verifying" : VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: root.update-phase == "verifying"
+                            ? @tr("Verifying…")
+                            : @tr("Downloading…") + " \{Math.round(root.update-progress * 100)}%";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-sm;
+                    }
+                    Rectangle {
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Theme.bg-panel;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * root.update-progress;
+                            height: parent.height;
+                            border-radius: 3px;
+                            background: Theme.accent;
+                        }
+                    }
+                }
+                if root.update-phase == "error" : Text {
+                    text: root.update-error;
+                    color: Theme.danger;
+                    font-size: Theme.fs-sm;
+                    wrap: word-wrap;
+                }
+
+                // 按钮区
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    if root.update-phase == "prompt" : HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            width: 100px; height: 32px; border-radius: Theme.radius-sm;
+                            background: skip-ta.has-hover ? Theme.bg-hover : transparent;
+                            border-width: 1px; border-color: Theme.border-strong;
+                            skip-ta := TouchArea { mouse-cursor: pointer; clicked => { root.update-skip(); } }
+                            Text { text: @tr("Skip this version"); color: Theme.text-secondary;
+                                   font-size: Theme.fs-sm; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        Rectangle {
+                            width: 64px; height: 32px; border-radius: Theme.radius-sm;
+                            background: later-ta.has-hover ? Theme.bg-hover : transparent;
+                            border-width: 1px; border-color: Theme.border-strong;
+                            later-ta := TouchArea { mouse-cursor: pointer; clicked => { root.update-later(); } }
+                            Text { text: @tr("Later"); color: Theme.text-secondary;
+                                   font-size: Theme.fs-sm; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        Rectangle {
+                            width: 96px; height: 32px; border-radius: Theme.radius-sm;
+                            background: Theme.accent;
+                            confirm-ta := TouchArea { mouse-cursor: pointer; clicked => { root.update-confirm(); } }
+                            Text { text: @tr("Update now"); color: #ffffff;
+                                   font-size: Theme.fs-sm; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+
+                    if root.update-phase == "ready" : Rectangle {
+                        width: 120px; height: 32px; border-radius: Theme.radius-sm;
+                        background: Theme.accent;
+                        restart-ta := TouchArea { mouse-cursor: pointer; clicked => { root.update-restart(); } }
+                        Text { text: root.update-guided ? @tr("Done") : @tr("Restart now"); color: #ffffff;
+                               font-size: Theme.fs-sm; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    if root.update-phase == "error" : HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            width: 100px; height: 32px; border-radius: Theme.radius-sm;
+                            background: rel-ta.has-hover ? Theme.bg-hover : transparent;
+                            border-width: 1px; border-color: Theme.border-strong;
+                            rel-ta := TouchArea { mouse-cursor: pointer; clicked => { root.update-open-release(); } }
+                            Text { text: @tr("Release page"); color: Theme.text-secondary;
+                                   font-size: Theme.fs-sm; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        Rectangle {
+                            width: 72px; height: 32px; border-radius: Theme.radius-sm;
+                            background: Theme.accent;
+                            retry-ta := TouchArea { mouse-cursor: pointer; clicked => { root.update-retry(); } }
+                            Text { text: @tr("Retry"); color: #ffffff;
+                                   font-size: Theme.fs-sm; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
