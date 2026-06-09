@@ -1551,8 +1551,29 @@ fn wire_callbacks(
     window.on_sftp_edit(move |tab_id: SharedString, path: SharedString| {
         if let Ok(handles) = edit_sftp.lock() {
             if let Some(handle) = handles.get(tab_id.as_str()) {
-                handle.open_temp(path.to_string(), true);
+                handle.read_file(path.to_string());
             }
+        }
+    });
+
+    let save_sftp = sftp_handles.clone();
+    window.on_editor_save(
+        move |tab_id: SharedString, remote: SharedString, content: SharedString| {
+            if let Ok(handles) = save_sftp.lock() {
+                if let Some(handle) = handles.get(tab_id.as_str()) {
+                    handle.write_file(remote.to_string(), content.to_string());
+                }
+            }
+        },
+    );
+
+    let editor_close_weak = window.as_weak();
+    window.on_editor_close(move || {
+        if let Some(w) = editor_close_weak.upgrade() {
+            w.set_editor_open(false);
+            w.set_editor_content("".into());
+            w.set_editor_dirty(false);
+            w.set_editor_confirm_discard(false);
         }
     });
 }
@@ -1866,6 +1887,25 @@ fn apply_session_event_to_window(
         }
         SessionEvent::SftpStatus(msg) => {
             update_terminal(&|t| t.sftp_status = msg.clone().into());
+            // 编辑器保存成功时（状态以"已保存/Saved"开头）清除脏标记并回显到编辑器状态行。
+            if win.get_editor_open() && msg.starts_with(crate::i18n::t("已保存", "Saved")) {
+                win.set_editor_dirty(false);
+                win.set_editor_status(msg.clone().into());
+            }
+        }
+        SessionEvent::SftpFileContent {
+            remote,
+            filename,
+            content,
+        } => {
+            win.set_editor_tab_id(tab_id.into());
+            win.set_editor_path(remote.into());
+            win.set_editor_filename(filename.into());
+            win.set_editor_content(content.into());
+            win.set_editor_dirty(false);
+            win.set_editor_confirm_discard(false);
+            win.set_editor_status("".into());
+            win.set_editor_open(true);
         }
         SessionEvent::SftpTreeUpdate(nodes) => {
             let rows: Vec<SftpTreeNode> = nodes

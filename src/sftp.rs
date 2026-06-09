@@ -31,6 +31,8 @@ pub enum SftpCommand {
     Upload { local: String, remote_dir: String },
     Delete(String),
     OpenTemp { remote: String, edit: bool },
+    ReadFile { remote: String },
+    WriteFile { remote: String, content: String },
     Close,
 }
 
@@ -40,9 +42,11 @@ pub enum EditableError {
     NotUtf8,
 }
 
+/// 内嵌编辑器可打开的最大文件大小（5 MB）。
+const MAX_EDIT_BYTES: usize = 5 * 1024 * 1024;
+
 /// 远端文件内容是否适合在纯文本编辑器中打开。
 /// 超过 `max_bytes` 或非 UTF-8 一律拒绝，避免把二进制读进编辑器、或保存时损坏文件。
-#[allow(dead_code)] // 接线（Task 5）后移除
 pub fn check_editable(bytes: &[u8], max_bytes: usize) -> Result<String, EditableError> {
     if bytes.len() > max_bytes {
         return Err(EditableError::TooLarge);
@@ -86,6 +90,14 @@ impl SftpHandle {
 
     pub fn open_temp(&self, remote: String, edit: bool) {
         let _ = self.commands.send(SftpCommand::OpenTemp { remote, edit });
+    }
+
+    pub fn read_file(&self, remote: String) {
+        let _ = self.commands.send(SftpCommand::ReadFile { remote });
+    }
+
+    pub fn write_file(&self, remote: String, content: String) {
+        let _ = self.commands.send(SftpCommand::WriteFile { remote, content });
     }
 
     pub fn close(&self) {
@@ -355,6 +367,77 @@ async fn run_sftp(
                         let _ = events.send(SessionEvent::SftpStatus(format!(
                             "{}: {e}",
                             t("删除失败", "Delete failed")
+                        )));
+                    }
+                }
+            }
+            SftpCommand::ReadFile { remote } => {
+                let filename = base_name(&remote);
+                // 先看大小，避免把超大文件整体读进内存。
+                let too_big = sftp
+                    .metadata(remote.as_str())
+                    .await
+                    .ok()
+                    .and_then(|m| m.size)
+                    .map(|sz| sz as usize > MAX_EDIT_BYTES)
+                    .unwrap_or(false);
+                if too_big {
+                    let _ = events.send(SessionEvent::SftpStatus(format!(
+                        "{}: {}",
+                        t("文件过大，无法编辑", "File too large to edit"),
+                        filename
+                    )));
+                } else {
+                    match sftp.read(remote.as_str()).await {
+                        Ok(bytes) => match check_editable(&bytes, MAX_EDIT_BYTES) {
+                            Ok(content) => {
+                                let _ = events.send(SessionEvent::SftpFileContent {
+                                    remote: remote.clone(),
+                                    filename,
+                                    content,
+                                });
+                            }
+                            Err(EditableError::TooLarge) => {
+                                let _ = events.send(SessionEvent::SftpStatus(format!(
+                                    "{}: {}",
+                                    t("文件过大，无法编辑", "File too large to edit"),
+                                    filename
+                                )));
+                            }
+                            Err(EditableError::NotUtf8) => {
+                                let _ = events.send(SessionEvent::SftpStatus(format!(
+                                    "{}: {}",
+                                    t(
+                                        "二进制或非 UTF-8 文件，暂不支持编辑",
+                                        "Binary / non-UTF-8 file, not editable"
+                                    ),
+                                    filename
+                                )));
+                            }
+                        },
+                        Err(e) => {
+                            let _ = events.send(SessionEvent::SftpStatus(format!(
+                                "{}: {e}",
+                                t("打开失败", "Open failed")
+                            )));
+                        }
+                    }
+                }
+            }
+            SftpCommand::WriteFile { remote, content } => {
+                let filename = base_name(&remote);
+                match sftp.write(remote.as_str(), content.as_bytes()).await {
+                    Ok(()) => {
+                        let _ = events.send(SessionEvent::SftpStatus(format!(
+                            "{}: {}",
+                            t("已保存", "Saved"),
+                            filename
+                        )));
+                    }
+                    Err(e) => {
+                        let _ = events.send(SessionEvent::SftpStatus(format!(
+                            "{}: {e}",
+                            t("保存失败", "Save failed")
                         )));
                     }
                 }

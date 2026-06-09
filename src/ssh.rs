@@ -160,6 +160,11 @@ pub enum SessionEvent {
         entries: Vec<RemoteEntry>,
     },
     SftpStatus(String),
+    SftpFileContent {
+        remote: String,
+        filename: String,
+        content: String,
+    },
     SftpTreeUpdate(Vec<RemoteTreeNode>),
     SftpTransfer {
         id: String,
