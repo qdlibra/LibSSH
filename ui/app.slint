@@ -126,6 +126,12 @@ export component AppWindow inherits Window {
     callback clear-transfers();              // wipe the transfer history
     callback set-language(string);           // switch UI language ("zh" / "en")
 
+    // --- Global CLI symlink (设置菜单「全局 CLI」) -------------------------
+    in-out property <int>  cli-link-state: 0;        // 0=未链接 1=已链接 2=失效
+    in-out property <bool> cli-link-supported: true; // Windows 下置 false → 整行隐藏
+    in-out property <string> cli-link-feedback;      // 操作结果反馈（多行；含 PATH 提示）
+    callback toggle-cli-link();
+
     // --- Session list ------------------------------------------------------
     in property <[SessionInfo]> sessions;
 
@@ -544,7 +550,10 @@ export component AppWindow inherits Window {
         x: parent.width - 196px;
         y: 40px;
         width: 198px;
-        height: 104px;
+        // 高度随可见项数自适应：104=3 项基准；133=显示 CLI 行（+1 项）；196=再带多行反馈。
+        height: root.cli-link-supported
+            ? (root.cli-link-feedback != "" ? 196px : 133px)
+            : 104px;
         visible: root.settings-open;
         background: Theme.bg-panel;
         border-radius: Theme.radius-md;
@@ -599,6 +608,42 @@ export component AppWindow inherits Window {
                     Text { text: root.lang-en ? "切换到中文" : "Switch to English";
                            color: Theme.text-primary; font-size: Theme.fs-md;
                            vertical-alignment: center; horizontal-stretch: 1; }
+                }
+            }
+            // Global CLI symlink toggle（点击后不关闭菜单，以便显示反馈）。
+            if root.cli-link-supported : Rectangle {
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: cli-ta.has-hover ? Theme.bg-hover : transparent;
+                cli-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.toggle-cli-link(); }
+                }
+                HorizontalLayout {
+                    padding-left: 8px; spacing: 8px;
+                    Text { text: "\u{E157}"; font-family: "Material Icons"; // link
+                           color: Theme.text-secondary; font-size: Theme.fs-sm;
+                           vertical-alignment: center; }
+                    Text {
+                        text: root.cli-link-state == 1
+                            ? (root.lang-en ? "Global CLI enabled · click to remove" : "全局 CLI 已启用 · 点击移除")
+                            : root.cli-link-state == 2
+                            ? (root.lang-en ? "Re-link global CLI" : "重新链接全局 CLI")
+                            : (root.lang-en ? "Enable global CLI" : "启用全局 CLI");
+                        color: Theme.text-primary; font-size: Theme.fs-md;
+                        vertical-alignment: center; horizontal-stretch: 1;
+                    }
+                }
+            }
+            // CLI 操作结果反馈（仅在有内容时存在）；左缩进与上方菜单文案对齐。
+            if root.cli-link-feedback != "" : HorizontalLayout {
+                padding-left: 12px; padding-right: 8px;
+                Text {
+                    text: root.cli-link-feedback;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                    wrap: word-wrap;
+                    horizontal-alignment: left;
                 }
             }
             Rectangle {
