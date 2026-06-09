@@ -194,6 +194,85 @@ pub async fn check_for_update(
     Ok(select_release_info(&rel, arch))
 }
 
+/// 仅允许 https + GitHub 官方下载域名（含 *.githubusercontent.com 子域）。
+fn is_allowed_host(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let host = rest.split(['/', ':']).next().unwrap_or("");
+    const EXACT: &[&str] = &[
+        "api.github.com",
+        "github.com",
+        "objects.githubusercontent.com",
+        "codeload.github.com",
+    ];
+    EXACT.contains(&host) || host.ends_with(".githubusercontent.com")
+}
+
+/// 下载 dmg 到 dest_dir，校验 SHA256（缺 checksums 判失败）。
+/// on_progress(已下载字节, 总字节)；总字节未知时回传 asset_size。
+/// 第一版下载不可中断——连接卡住由 connect_timeout 兜底。
+pub async fn download_and_verify(
+    rel: &ReleaseInfo,
+    dest_dir: &Path,
+    on_progress: impl Fn(u64, u64),
+) -> Result<PathBuf> {
+    use futures::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    if !is_allowed_host(&rel.asset_url) {
+        bail!("refusing to download from untrusted host: {}", rel.asset_url);
+    }
+    let checksums_url = rel
+        .checksums_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("release has no checksums.txt; refusing to auto-update"))?;
+    if !is_allowed_host(checksums_url) {
+        bail!("refusing to fetch checksums from untrusted host");
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .build()?;
+
+    // 1) 期望哈希。
+    let checksums = client
+        .get(checksums_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let expected = parse_checksums(&checksums, &rel.asset_name)
+        .ok_or_else(|| anyhow!("checksums.txt has no entry for {}", rel.asset_name))?;
+
+    // 2) 流式下载到文件 + 进度。
+    tokio::fs::create_dir_all(dest_dir).await?;
+    let dest = dest_dir.join(&rel.asset_name);
+    let resp = client.get(&rel.asset_url).send().await?.error_for_status()?;
+    let total = resp.content_length().unwrap_or(rel.asset_size);
+    let mut file = tokio::fs::File::create(&dest).await?;
+    let mut downloaded: u64 = 0;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+        downloaded += chunk.len() as u64;
+        on_progress(downloaded, total);
+    }
+    file.flush().await?;
+    drop(file);
+
+    // 3) 校验（复用 sha256_hex）。
+    let bytes = tokio::fs::read(&dest).await?;
+    if sha256_hex(&bytes).to_lowercase() != expected.to_lowercase() {
+        let _ = tokio::fs::remove_file(&dest).await;
+        bail!("checksum mismatch for {}", rel.asset_name);
+    }
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +365,16 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  LibSSH-macos-a
         assert_eq!(info.checksums_url.as_deref(), Some("https://objects.githubusercontent.com/checksums.txt"));
         assert!(info.notes.contains("自动更新"));
         assert!(select_release_info(&rel, "riscv").is_none());
+    }
+
+    #[test]
+    fn is_allowed_host_requires_https_and_whitelist() {
+        assert!(is_allowed_host("https://api.github.com/repos/x/releases/latest"));
+        assert!(is_allowed_host("https://objects.githubusercontent.com/a.dmg"));
+        assert!(is_allowed_host("https://release-assets.githubusercontent.com/a.dmg"));
+        assert!(!is_allowed_host("http://api.github.com/x"));
+        assert!(!is_allowed_host("https://evil.com/a.dmg"));
+        assert!(!is_allowed_host("https://api.github.com.evil.com/x"));
     }
 
     #[test]
