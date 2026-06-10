@@ -77,6 +77,7 @@ export component TerminalView inherits Rectangle {
     in property <int> cursor-col;
     in property <int> rows-used;        // content rows, for viewport sizing
     in property <bool>   is-alt-screen;
+    in property <bool>   conn-lost: false;  // 断开后状态条显示重连按钮
     in property <[TermMatch]> find-matches; // search-highlight rectangles
     in property <[TermMatch]> selection;    // drag-selection highlight rectangles
 
@@ -91,6 +92,7 @@ export component TerminalView inherits Rectangle {
 
     callback send-key(string, bool, bool, bool);
     callback terminal-resize(float, float);
+    callback reconnect();                   // 手动重连当前会话
     callback sftp-navigate(string);
     callback sftp-download(string);
     callback sftp-upload-clicked(string);
@@ -223,6 +225,27 @@ export component TerminalView inherits Rectangle {
                     font-size: Theme.fs-xs;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
+                }
+                // 断开后的就地重连按钮（自动重连等待期也可点，立即重试）。
+                if root.conn-lost : Rectangle {
+                    width: 64px;
+                    height: 18px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: Theme.radius-sm;
+                    background: reconnect-ta.pressed ? Theme.accent-pressed
+                        : reconnect-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                    animate background { duration: 120ms; }
+                    reconnect-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.reconnect(); }
+                    }
+                    Text {
+                        text: @tr("Reconnect");
+                        color: white;
+                        font-size: Theme.fs-xs;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
                 // Alt-screen indicator only.  IMPORTANT: never put cell-w / cell-h
                 // (a Text's preferred-size) inside another Text's `text` — doing so

@@ -101,6 +101,9 @@ pub fn run(log_buffer: crate::logbuf::LogBuffer) -> anyhow::Result<()> {
     let models = initialise_models(&window, &store.borrow());
     let handles: Rc<RefCell<HashMap<String, SessionHandle>>> =
         Rc::new(RefCell::new(HashMap::new()));
+    // tab → 连接时的 Session 副本：断线重连用同一配置原地重建连接。
+    let tab_sessions: Rc<RefCell<HashMap<String, Session>>> =
+        Rc::new(RefCell::new(HashMap::new()));
     let sftp_handles: SftpHandles = Arc::new(Mutex::new(HashMap::new()));
     let sftp_manual_nav: SftpManualNav = Arc::new(Mutex::new(HashMap::new()));
     let bufs: TermBuffers = Arc::new(Mutex::new(HashMap::new()));
@@ -117,6 +120,7 @@ pub fn run(log_buffer: crate::logbuf::LogBuffer) -> anyhow::Result<()> {
         models,
         runtime,
         handles,
+        tab_sessions,
         sftp_handles.clone(),
         sftp_manual_nav.clone(),
         bufs,
@@ -550,6 +554,7 @@ fn wire_callbacks(
     models: AppModels,
     runtime: Arc<Runtime>,
     handles: Rc<RefCell<HashMap<String, SessionHandle>>>,
+    tab_sessions: Rc<RefCell<HashMap<String, Session>>>,
     sftp_handles: SftpHandles,
     sftp_manual_nav: SftpManualNav,
     bufs: TermBuffers,
@@ -837,6 +842,7 @@ fn wire_callbacks(
     let connect_tabs = tabs_model.clone();
     let connect_terminals = terminals_model.clone();
     let connect_ctx = io_ctx.clone();
+    let connect_tab_sessions = tab_sessions.clone();
     let connect_last_size = last_term_size.clone();
     window.on_connect_session(move |id: SharedString| {
         let id = id.to_string();
@@ -845,6 +851,7 @@ fn wire_callbacks(
         let connect_tabs = connect_tabs.clone();
         let connect_terminals = connect_terminals.clone();
         let connect_ctx = connect_ctx.clone();
+        let connect_tab_sessions = connect_tab_sessions.clone();
         let connect_last_size = connect_last_size.clone();
 
         Timer::single_shot(std::time::Duration::from_millis(1), move || {
@@ -853,6 +860,9 @@ fn wire_callbacks(
                 None => return,
             };
             let tab_id = format!("term-{}", uuid::Uuid::new_v4());
+            connect_tab_sessions
+                .borrow_mut()
+                .insert(tab_id.clone(), session.clone());
             connect_ctx.tab_statuses.lock().unwrap().insert(
                 tab_id.clone(),
                 TabStatus {
@@ -875,6 +885,7 @@ fn wire_callbacks(
                 cursor_col: 0,
                 rows_used: 0,
                 is_alt_screen: false,
+                conn_lost: false,
                 find_matches: empty_model::<TermMatch>(),
                 selection: empty_model::<TermMatch>(),
                 sftp_path: "/".into(),
@@ -923,9 +934,48 @@ fn wire_callbacks(
         });
     });
 
+    // 就地重连：手动按钮与自动重连定时器共用入口。终端缓冲 / 回看历史 /
+    // SFTP 面板状态全部保留，只重建 SSH + SFTP 两条连接。
+    let rc_ctx = io_ctx.clone();
+    let rc_sessions = tab_sessions.clone();
+    let rc_last_size = last_term_size.clone();
+    let weak = window.as_weak();
+    window.on_reconnect_tab(move |tab_id: SharedString| {
+        let tab_id = tab_id.to_string();
+        // 仅在「已断开」状态下执行：吞掉手动点击与自动定时器的双重触发。
+        {
+            let st = rc_ctx.tab_statuses.lock().unwrap();
+            if st.get(&tab_id).map(|s| s.state) != Some(2) {
+                return;
+            }
+        }
+        let Some(session) = rc_sessions.borrow().get(&tab_id).cloned() else {
+            return; // 标签已被关闭
+        };
+        rc_ctx.user_closing.lock().unwrap().remove(&tab_id);
+        if let Some(h) = rc_ctx.handles.borrow_mut().remove(&tab_id) {
+            h.close();
+        }
+        if let Some(h) = rc_ctx.sftp_handles.lock().unwrap().remove(&tab_id) {
+            h.close();
+        }
+        if let Some(st) = rc_ctx.tab_statuses.lock().unwrap().get_mut(&tab_id) {
+            st.state = 0;
+        }
+        if let Some(w) = weak.upgrade() {
+            set_terminal_row(&w, &tab_id, |row| {
+                row.conn_lost = false;
+                row.status = crate::i18n::t("重连中...", "Reconnecting...").into();
+            });
+        }
+        let (cols, rows) = *rc_last_size.lock().unwrap();
+        start_session_io(weak.clone(), &rc_ctx, tab_id, session, cols, rows);
+    });
+
     let weak = window.as_weak();
     let close_tabs = tabs_model.clone();
     let close_terminals = terminals_model.clone();
+    let close_tab_sessions = tab_sessions.clone();
     let close_handles = handles.clone();
     let close_sftp_handles = sftp_handles.clone();
     let close_sftp_manual_nav = sftp_manual_nav.clone();
@@ -941,6 +991,7 @@ fn wire_callbacks(
         }
         // 标记为"用户主动关闭"，让随后异步到达的 Closed 事件不要误弹"连接失败"框。
         close_user_closing.lock().unwrap().insert(id.clone());
+        close_tab_sessions.borrow_mut().remove(&id);
         if let Some(handle) = close_handles.borrow_mut().remove(&id) {
             handle.close();
         }
@@ -2303,7 +2354,10 @@ fn apply_session_event_to_window(
         }
         SessionEvent::Connected => {
             update_tab(&|t| t.connected = true);
-            update_terminal(&|t| t.status = crate::i18n::t("已连接", "Connected").into());
+            update_terminal(&|t| {
+                t.status = crate::i18n::t("已连接", "Connected").into();
+                t.conn_lost = false;
+            });
             if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
                 st.state = 1;
             }
@@ -2314,7 +2368,9 @@ fn apply_session_event_to_window(
         SessionEvent::Closed(reason) => {
             update_tab(&|t| t.connected = false);
             update_terminal(&|t| {
-                t.status = format!("{} - {reason}", crate::i18n::t("已断开", "Disconnected")).into()
+                t.status =
+                    format!("{} - {reason}", crate::i18n::t("已断开", "Disconnected")).into();
+                t.conn_lost = true;
             });
             let show_failure_alert = {
                 // 取出并清除"用户主动关闭"标记（一次性）。

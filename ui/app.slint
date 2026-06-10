@@ -42,6 +42,7 @@ export struct TerminalState {
     cursor-col: int,
     rows-used: int,        // content rows, for viewport sizing
     is-alt-screen: bool,
+    conn-lost: bool,       // 连接已断开（状态条显示重连按钮；重连中复位）
     find-matches: [TermMatch], // search-highlight rectangles
     selection: [TermMatch],    // drag-selection highlight rectangles
 
@@ -195,6 +196,8 @@ export component AppWindow inherits Window {
     // is now active.  Fired on every active-tab change, UI- or code-driven.
     callback refresh-sidebar();
 
+    // Reconnect a disconnected terminal tab in place (manual button or auto-retry).
+    callback reconnect-tab(string /* tab-id */);
     // Raw keystroke forwarding: Rust converts key+modifiers to PTY bytes.
     callback send-key(string /* tab-id */, string /* key */, bool /* ctrl */, bool /* alt */, bool /* shift */);
     // Notifies Rust of a PTY resize (pixel dimensions; Rust converts to cols/rows).
@@ -313,6 +316,8 @@ export component AppWindow inherits Window {
                     cursor-col: term.cursor-col;
                     rows-used: term.rows-used;
                     is-alt-screen: term.is-alt-screen;
+                    conn-lost: term.conn-lost;
+                    reconnect => { root.reconnect-tab(term.id); }
                     find-matches: term.find-matches;
                     selection: term.selection;
                     sftp-panel-height <=> root.sftp-panel-height;

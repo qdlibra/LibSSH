@@ -278,3 +278,6 @@ msgstr "刷新"
 
 msgid "Enter name"
 msgstr "输入名称"
+
+msgid "Reconnect"
+msgstr "重连"
