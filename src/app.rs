@@ -67,6 +67,8 @@ enum CsiState {
 struct TabStatus {
     host: String,
     state: u8,
+    /// 本轮断线已发起的自动重连次数；连接成功后清零。
+    reconnect_attempts: u8,
     cpu: f32,
     mem_used_kib: u64,
     mem_total_kib: u64,
@@ -383,6 +385,19 @@ fn should_show_connection_failed_alert(previous_state: Option<u8>) -> bool {
 /// 这种断开是预期内的，永不弹窗；否则沿用"仅未成功连接前才弹"的逻辑。
 fn should_alert_on_close(was_user_close: bool, previous_state: Option<u8>) -> bool {
     !was_user_close && should_show_connection_failed_alert(previous_state)
+}
+
+/// 第 `attempt` 次自动重连前的退避等待（2s/4s/8s）；attempt 从 1 起，>3 不再重试。
+fn auto_reconnect_delay(attempt: u8) -> Option<std::time::Duration> {
+    (1..=3)
+        .contains(&attempt)
+        .then(|| std::time::Duration::from_secs(1u64 << attempt))
+}
+
+/// 意外断开是否安排自动重连：仅限「曾成功连接（state==1）、非用户主动关闭、
+/// 重试次数未用尽」。首次连接失败（配置/网络错误）重试无意义，交给失败弹窗。
+fn should_auto_reconnect(was_user_close: bool, previous_state: Option<u8>, attempts: u8) -> bool {
+    !was_user_close && previous_state == Some(1) && attempts < 3
 }
 
 fn show_connection_failed_alert(win: &AppWindow, reason: &str) {
@@ -2360,6 +2375,7 @@ fn apply_session_event_to_window(
             });
             if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
                 st.state = 1;
+                st.reconnect_attempts = 0;
             }
             if win.get_active_tab_id().as_str() == tab_id {
                 refresh_sidebar(win, statuses, local, local_net_hist);
@@ -2367,21 +2383,66 @@ fn apply_session_event_to_window(
         }
         SessionEvent::Closed(reason) => {
             update_tab(&|t| t.connected = false);
-            update_terminal(&|t| {
-                t.status =
-                    format!("{} - {reason}", crate::i18n::t("已断开", "Disconnected")).into();
-                t.conn_lost = true;
-            });
-            let show_failure_alert = {
+            // 判定本次断开的去向：自动重连（曾连上 + 非用户关闭 + 次数未尽）
+            // 还是仅亮重连按钮；首次连接失败仍走原有的失败弹窗。
+            let (schedule, show_failure_alert) = {
                 // 取出并清除"用户主动关闭"标记（一次性）。
                 let was_user_close = user_closing.lock().unwrap().remove(tab_id);
                 let mut statuses = statuses.lock().unwrap();
                 let previous_state = statuses.get(tab_id).map(|st| st.state);
+                let attempts = statuses
+                    .get(tab_id)
+                    .map(|st| st.reconnect_attempts)
+                    .unwrap_or(0);
+                let auto = should_auto_reconnect(was_user_close, previous_state, attempts);
                 if let Some(st) = statuses.get_mut(tab_id) {
                     st.state = 2;
+                    if auto {
+                        st.reconnect_attempts += 1;
+                    }
                 }
-                should_alert_on_close(was_user_close, previous_state)
+                let schedule = if auto {
+                    auto_reconnect_delay(attempts + 1).map(|d| (d, attempts + 1))
+                } else {
+                    None
+                };
+                (
+                    schedule,
+                    schedule.is_none() && should_alert_on_close(was_user_close, previous_state),
+                )
             };
+            match schedule {
+                Some((delay, attempt)) => {
+                    update_terminal(&|t| {
+                        t.conn_lost = true;
+                        t.status = format!(
+                            "{} - {} ({}/3, {}s)",
+                            crate::i18n::t("已断开", "Disconnected"),
+                            crate::i18n::t("自动重连", "auto-reconnect"),
+                            attempt,
+                            delay.as_secs(),
+                        )
+                        .into();
+                    });
+                    let weak = win.as_weak();
+                    let tid = tab_id.to_string();
+                    Timer::single_shot(delay, move || {
+                        if let Some(w) = weak.upgrade() {
+                            w.invoke_reconnect_tab(tid.clone().into());
+                        }
+                    });
+                }
+                None => {
+                    update_terminal(&|t| {
+                        t.conn_lost = true;
+                        t.status = format!(
+                            "{} - {reason}",
+                            crate::i18n::t("已断开", "Disconnected")
+                        )
+                        .into();
+                    });
+                }
+            }
             if show_failure_alert {
                 show_connection_failed_alert(win, &reason);
             }
@@ -3220,6 +3281,27 @@ fn idx_to_rgb(i: u8, bold: bool) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_reconnect_backoff_caps_at_three_attempts() {
+        use std::time::Duration;
+        assert_eq!(auto_reconnect_delay(1), Some(Duration::from_secs(2)));
+        assert_eq!(auto_reconnect_delay(2), Some(Duration::from_secs(4)));
+        assert_eq!(auto_reconnect_delay(3), Some(Duration::from_secs(8)));
+        assert_eq!(auto_reconnect_delay(4), None);
+        assert_eq!(auto_reconnect_delay(0), None);
+    }
+
+    #[test]
+    fn auto_reconnect_only_after_established_non_user_close() {
+        // (was_user_close, previous_state, attempts_so_far) → 是否安排自动重连
+        assert!(should_auto_reconnect(false, Some(1), 0));
+        assert!(should_auto_reconnect(false, Some(1), 2));
+        assert!(!should_auto_reconnect(true, Some(1), 0)); // 用户主动关
+        assert!(!should_auto_reconnect(false, Some(0), 0)); // 从未连上（配置错）
+        assert!(!should_auto_reconnect(false, None, 0)); // 状态未知
+        assert!(!should_auto_reconnect(false, Some(1), 3)); // 次数用尽
+    }
 
     #[test]
     fn maps_terminal_keys_to_pty_bytes() {
