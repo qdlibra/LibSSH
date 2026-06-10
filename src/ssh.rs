@@ -459,8 +459,7 @@ async fn run_session(
     )));
 
     let mut prompt_injected = false;
-    const PROMPT_SETUP: &[u8] =
-        b"export PROMPT_COMMAND='printf \"\\033]7;file://${HOSTNAME}${PWD}\\007\"' && eval \"$PROMPT_COMMAND\"\r";
+    let mut echo_suppressor = EchoSuppressor::new();
 
     const MON_CMD: &[u8] = b"while :; do awk '/^cpu /{print}' /proc/stat; awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/{print}' /proc/meminfo; cat /proc/net/dev; echo __DF__; df -kP 2>/dev/null; echo __MSTICK__; sleep 2; done\n";
     let mut mon_channel = match handle.channel_open_session().await {
@@ -508,13 +507,17 @@ async fn run_session(
                         let text = String::from_utf8_lossy(&data).into_owned();
                         if !prompt_injected && !text.trim().is_empty() {
                             prompt_injected = true;
-                            let _ = channel.data(PROMPT_SETUP).await;
+                            echo_suppressor.arm();
+                            let _ = channel.data(format!("{PROMPT_SETUP_TEXT}\r").as_bytes()).await;
                         }
+                        let text = echo_suppressor.feed(text);
                         if let Some(cwd) = extract_osc7_path(&text) {
                             tracing::debug!("OSC7 cwd={:?}", cwd);
                             let _ = events.send(SessionEvent::CwdChanged(cwd));
                         }
-                        let _ = events.send(SessionEvent::Output(text));
+                        if !text.is_empty() {
+                            let _ = events.send(SessionEvent::Output(text));
+                        }
                     }
                     Some(ChannelMsg::ExtendedData { data, ext: _ }) => {
                         let text = String::from_utf8_lossy(&data).into_owned();
@@ -712,6 +715,82 @@ fn parse_net_dev_line(line: &str) -> Option<(String, (u64, u64))> {
     Some((iface.to_string(), (nums[0], nums[8])))
 }
 
+/// 行首空格：远端 shell 启用 HISTCONTROL=ignorespace/ignoreboth 时不记入 history。
+const PROMPT_SETUP_TEXT: &str = " export PROMPT_COMMAND='printf \"\\033]7;file://${HOSTNAME}${PWD}\\007\"' && eval \"$PROMPT_COMMAND\"";
+
+/// 注入命令的回显最迟应出现在其后几个输出包内；超过该字节数仍未命中
+/// 说明回显被远端改写（如 zsh 语法高亮插件），放弃过滤、降级为可见。
+const ECHO_SCAN_BUDGET: usize = 8192;
+
+#[derive(PartialEq)]
+enum EchoSuppressorState {
+    Idle,
+    Scanning,
+    Done,
+}
+
+/// 把注入命令在 PTY 中的回显从输出流里删掉（远端无感知）。
+/// 回显可能跨多个 Data 包分片到达，因此流式匹配：尾部疑似命令
+/// 前缀的字节先暂扣；超出预算未命中则放弃并原样放行，绝不丢字节。
+struct EchoSuppressor {
+    state: EchoSuppressorState,
+    held: String,
+    seen: usize,
+}
+
+impl EchoSuppressor {
+    fn new() -> Self {
+        Self {
+            state: EchoSuppressorState::Idle,
+            held: String::new(),
+            seen: 0,
+        }
+    }
+
+    /// 注入 PROMPT_SETUP 时调用，开始扫描后续输出中的回显。
+    fn arm(&mut self) {
+        if self.state == EchoSuppressorState::Idle {
+            self.state = EchoSuppressorState::Scanning;
+        }
+    }
+
+    fn feed(&mut self, chunk: String) -> String {
+        if self.state != EchoSuppressorState::Scanning {
+            return chunk;
+        }
+        self.seen += chunk.len();
+        self.held.push_str(&chunk);
+
+        if let Some(pos) = self.held.find(PROMPT_SETUP_TEXT) {
+            self.state = EchoSuppressorState::Done;
+            let mut out = String::with_capacity(self.held.len() - PROMPT_SETUP_TEXT.len());
+            out.push_str(&self.held[..pos]);
+            out.push_str(&self.held[pos + PROMPT_SETUP_TEXT.len()..]);
+            self.held.clear();
+            return out;
+        }
+
+        if self.seen > ECHO_SCAN_BUDGET {
+            self.state = EchoSuppressorState::Done;
+            return std::mem::take(&mut self.held);
+        }
+
+        // 暂扣尾部与命令文本头部的最长重叠（纯 ASCII，切点必在 char 边界）
+        let keep = longest_overlap(self.held.as_bytes(), PROMPT_SETUP_TEXT.as_bytes());
+        let rest = self.held.split_off(self.held.len() - keep);
+        std::mem::replace(&mut self.held, rest)
+    }
+}
+
+/// haystack 尾部与 needle 头部的最长重叠字节数（不含完整匹配）。
+fn longest_overlap(haystack: &[u8], needle: &[u8]) -> usize {
+    let max = haystack.len().min(needle.len().saturating_sub(1));
+    (1..=max)
+        .rev()
+        .find(|&k| haystack[haystack.len() - k..] == needle[..k])
+        .unwrap_or(0)
+}
+
 struct ClientHandler;
 
 #[async_trait]
@@ -754,6 +833,64 @@ mod tests {
         assert_eq!(
             extract_osc7_path("\x1b]7;file:///tmp\x1b\\"),
             Some("/tmp".to_string())
+        );
+    }
+
+    #[test]
+    fn echo_suppressor_removes_injected_command_echo() {
+        let mut s = EchoSuppressor::new();
+        s.arm();
+        let out = s.feed(format!("user@host:~$ {PROMPT_SETUP_TEXT}\r\nrest"));
+        assert_eq!(out, "user@host:~$ \r\nrest");
+    }
+
+    #[test]
+    fn echo_suppressor_handles_echo_split_across_chunks() {
+        let mut s = EchoSuppressor::new();
+        s.arm();
+        let full = format!("user@host:~$ {PROMPT_SETUP_TEXT}\r\n");
+        let (a, rest) = full.split_at(30);
+        let (b, c) = rest.split_at(40);
+        let mut out = String::new();
+        out.push_str(&s.feed(a.to_string()));
+        out.push_str(&s.feed(b.to_string()));
+        out.push_str(&s.feed(c.to_string()));
+        assert_eq!(out, "user@host:~$ \r\n");
+    }
+
+    #[test]
+    fn echo_suppressor_keeps_multibyte_output_intact() {
+        let mut s = EchoSuppressor::new();
+        s.arm();
+        let out = s.feed(format!("欢迎使用{PROMPT_SETUP_TEXT}\r\n"));
+        assert_eq!(out, "欢迎使用\r\n");
+    }
+
+    #[test]
+    fn echo_suppressor_releases_held_prefix_on_mismatch() {
+        let mut s = EchoSuppressor::new();
+        s.arm();
+        // 尾部恰好像命令开头 → 暂扣等下一包
+        assert_eq!(s.feed("foo export PROMPT".to_string()), "foo");
+        // 下一包证明不是回显 → 原样补出
+        assert_eq!(s.feed("_X bar".to_string()), " export PROMPT_X bar");
+    }
+
+    #[test]
+    fn echo_suppressor_passes_through_when_idle_or_after_budget() {
+        // 未 arm：直通
+        let mut s = EchoSuppressor::new();
+        assert_eq!(s.feed("hello".to_string()), "hello");
+
+        // 超预算未命中：放弃过滤，已扣数据吐回，之后直通
+        let mut s = EchoSuppressor::new();
+        s.arm();
+        let big = "x".repeat(ECHO_SCAN_BUDGET + 1);
+        assert_eq!(s.feed(big.clone()), big);
+        assert_eq!(
+            s.feed(PROMPT_SETUP_TEXT.to_string()),
+            PROMPT_SETUP_TEXT,
+            "放弃后即使出现命令文本也不再过滤"
         );
     }
 

@@ -74,6 +74,12 @@ export component SftpPanel inherits Rectangle {
     property <string> path-draft: current-path;
     changed current-path => { root.path-draft = root.current-path; }
 
+    // 行内加载指示：双击 / 右键「打开」某个目录后记下目标路径，该行的文件夹
+    // 图标前展开一个旋转动画。加载终结时 Rust 侧统一复位 `loading`（成功
+    // SftpEntries / 失败 SftpLoadFailed 都会），这里跟着清掉目标即可。
+    property <string> loading-target: "";
+    changed loading => { if (!root.loading) { root.loading-target = ""; } }
+
     // 目录树宽度（分隔把手左右拖动调整）。
     in-out property <length> tree-width: 160px;
 
@@ -323,7 +329,10 @@ export component SftpPanel inherits Rectangle {
                     file-list := VerticalLayout {
                         spacing: 0;
 
-                        if root.loading : Rectangle {
+                        // 顶部整体「Loading...」行：仅在没有具体目标行（终端 cd
+                        // 联动、路径栏直接输入等）时显示；点击目录导航时由该行
+                        // 图标前的 spinner 提示，避免双重加载指示。
+                        if root.loading && root.loading-target == "" : Rectangle {
                             height: 40px;
                             Text { text: @tr("Loading..."); color: Theme.text-muted; font-size: Theme.fs-sm;
                                    horizontal-alignment: center; vertical-alignment: center; }
@@ -349,6 +358,7 @@ export component SftpPanel inherits Rectangle {
                                 mouse-cursor: pointer;
                                 double-clicked => {
                                     if (entry.is-dir) {
+                                        root.loading-target = entry.full-path;
                                         root.navigate(entry.full-path);
                                     } else {
                                         root.download(entry.full-path);
@@ -385,6 +395,7 @@ export component SftpPanel inherits Rectangle {
                                             label: @tr("Open");
                                             clicked => {
                                                 if (entry.is-dir) {
+                                                    root.loading-target = entry.full-path;
                                                     root.navigate(entry.full-path);
                                                 } else {
                                                     root.edit(entry.full-path);
@@ -421,12 +432,37 @@ export component SftpPanel inherits Rectangle {
                             HorizontalLayout {
                                 padding-left: 8px; padding-right: 8px; spacing: 4px;
 
-                                Text {
-                                    text: entry.is-dir ? "\u{e2c7}" : "\u{e873}";
-                                    font-family: "Material Icons";
-                                    color: entry.is-dir ? Theme.folder-icon : Theme.text-muted;
-                                    font-size: Theme.fs-md;
-                                    vertical-alignment: center;
+                                // 图标组：加载中的目录在文件夹图标前平滑展开一个
+                                // 旋转的加载指示（spacing:0 的子布局保证未加载时
+                                // 图标位置与原来分毫不差，不影响列对齐）。
+                                HorizontalLayout {
+                                    spacing: 0;
+                                    spin-slot := Rectangle {
+                                        property <bool> active: entry.is-dir
+                                            && root.loading
+                                            && root.loading-target == entry.full-path;
+                                        width: self.active ? 18px : 0px;
+                                        animate width { duration: 120ms; easing: ease-out; }
+                                        clip: true;
+                                        if spin-slot.active : Text {
+                                            text: "\u{e863}";   // Material Icons "autorenew"
+                                            font-family: "Material Icons";
+                                            color: Theme.accent;
+                                            font-size: Theme.fs-md;
+                                            width: 16px;
+                                            height: 100%;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            rotation-angle: (animation-tick() / 1.2s) * 360deg;
+                                        }
+                                    }
+                                    Text {
+                                        text: entry.is-dir ? "\u{e2c7}" : "\u{e873}";
+                                        font-family: "Material Icons";
+                                        color: entry.is-dir ? Theme.folder-icon : Theme.text-muted;
+                                        font-size: Theme.fs-md;
+                                        vertical-alignment: center;
+                                    }
                                 }
                                 Text {
                                     text: entry.name;

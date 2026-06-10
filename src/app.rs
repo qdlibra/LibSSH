@@ -1558,6 +1558,12 @@ fn wire_callbacks(
         nav_manual.lock().unwrap().insert(tab_id.clone(), true);
         if let Ok(handles) = nav_sftp.lock() {
             if let Some(handle) = handles.get(&tab_id) {
+                // 手动导航也亮起加载态（行内目录 spinner / 顶部 Loading 行靠它
+                // 触发）。只在确实发出 list_dir 时设置，加载终结事件
+                // （SftpEntries / SftpLoadFailed）会统一把它复位。
+                if let Some(w) = weak.upgrade() {
+                    set_terminal_row(&w, &tab_id, |row| row.sftp_loading = true);
+                }
                 handle.list_dir(target);
             }
         }
