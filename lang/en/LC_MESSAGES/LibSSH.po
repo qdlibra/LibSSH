@@ -251,3 +251,30 @@ msgstr "Release page"
 
 msgid "Installing…"
 msgstr "Installing…"
+
+msgid "Open"
+msgstr "Open"
+
+msgid "Copy path"
+msgstr "Copy path"
+
+msgid "Rename"
+msgstr "Rename"
+
+msgid "New file"
+msgstr "New file"
+
+msgid "New folder"
+msgstr "New folder"
+
+msgid "Upload file"
+msgstr "Upload file"
+
+msgid "Upload folder"
+msgstr "Upload folder"
+
+msgid "Refresh"
+msgstr "Refresh"
+
+msgid "Enter name"
+msgstr "Enter name"

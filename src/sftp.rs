@@ -29,6 +29,10 @@ pub enum SftpCommand {
     ToggleTreeNode(String),
     Download { remote: String, local_dir: String },
     Upload { local: String, remote_dir: String },
+    UploadDir { local: String, remote_dir: String },
+    Rename { from: String, new_name: String },
+    CreateFile { dir: String, name: String },
+    CreateDir { dir: String, name: String },
     Delete(String),
     ReadFile { remote: String },
     WriteFile { remote: String, content: String },
@@ -77,6 +81,24 @@ impl SftpHandle {
         let _ = self
             .commands
             .send(SftpCommand::Upload { local, remote_dir });
+    }
+
+    pub fn upload_dir(&self, local: String, remote_dir: String) {
+        let _ = self
+            .commands
+            .send(SftpCommand::UploadDir { local, remote_dir });
+    }
+
+    pub fn rename(&self, from: String, new_name: String) {
+        let _ = self.commands.send(SftpCommand::Rename { from, new_name });
+    }
+
+    pub fn create_file(&self, dir: String, name: String) {
+        let _ = self.commands.send(SftpCommand::CreateFile { dir, name });
+    }
+
+    pub fn create_dir(&self, dir: String, name: String) {
+        let _ = self.commands.send(SftpCommand::CreateDir { dir, name });
     }
 
     pub fn toggle_tree_node(&self, path: String) {
@@ -279,27 +301,65 @@ async fn run_sftp(
             }
             SftpCommand::Download { remote, local_dir } => {
                 let filename = base_name(&remote);
-                let local_path = format!("{}/{}", local_dir.trim_end_matches('/'), filename);
-                let id = Uuid::new_v4().to_string();
+                let is_dir = sftp
+                    .metadata(remote.as_str())
+                    .await
+                    .ok()
+                    .and_then(|m| m.permissions)
+                    .map(|p| (p & 0o170_000) == 0o040_000)
+                    .unwrap_or(false);
                 let _ = events.send(SessionEvent::SftpStatus(format!(
                     "{} {}...",
                     t("下载", "Downloading"),
                     filename
                 )));
-                match download_impl(&sftp, &remote, &local_path, &filename, &id, &events).await {
-                    Ok(()) => {
-                        let _ = events.send(SessionEvent::SftpStatus(format!(
-                            "{}: {}",
-                            t("下载完成", "Downloaded"),
-                            filename
-                        )));
+                if is_dir {
+                    match download_dir_impl(&sftp, &remote, &local_dir, &events).await {
+                        Ok((ok, failed)) if failed == 0 => {
+                            let _ = events.send(SessionEvent::SftpStatus(format!(
+                                "{}: {} ({} {})",
+                                t("下载完成", "Downloaded"),
+                                filename,
+                                ok,
+                                t("个文件", "files")
+                            )));
+                        }
+                        Ok((ok, failed)) => {
+                            let _ = events.send(SessionEvent::SftpStatus(format!(
+                                "{}: {} {} / {} {}",
+                                t("下载结束", "Download finished"),
+                                ok,
+                                t("成功", "ok"),
+                                failed,
+                                t("失败", "failed")
+                            )));
+                        }
+                        Err(e) => {
+                            let _ = events.send(SessionEvent::SftpStatus(format!(
+                                "{}: {e}",
+                                t("下载失败", "Download failed")
+                            )));
+                        }
                     }
-                    Err(e) => {
-                        emit_transfer(&events, &id, &filename, false, 0, 0, 2, &e.to_string());
-                        let _ = events.send(SessionEvent::SftpStatus(format!(
-                            "{}: {e}",
-                            t("下载失败", "Download failed")
-                        )));
+                } else {
+                    let local_path = format!("{}/{}", local_dir.trim_end_matches('/'), filename);
+                    let id = Uuid::new_v4().to_string();
+                    match download_impl(&sftp, &remote, &local_path, &filename, &id, &events).await
+                    {
+                        Ok(()) => {
+                            let _ = events.send(SessionEvent::SftpStatus(format!(
+                                "{}: {}",
+                                t("下载完成", "Downloaded"),
+                                filename
+                            )));
+                        }
+                        Err(e) => {
+                            emit_transfer(&events, &id, &filename, false, 0, 0, 2, &e.to_string());
+                            let _ = events.send(SessionEvent::SftpStatus(format!(
+                                "{}: {e}",
+                                t("下载失败", "Download failed")
+                            )));
+                        }
                     }
                 }
             }
@@ -332,6 +392,150 @@ async fn run_sftp(
                         let _ = events.send(SessionEvent::SftpStatus(format!(
                             "{}: {e}",
                             t("上传失败", "Upload failed")
+                        )));
+                    }
+                }
+            }
+            SftpCommand::UploadDir { local, remote_dir } => {
+                let dirname = base_name(&local);
+                let remote_root = join_remote(&remote_dir, &dirname);
+                let mut dirs: Vec<String> = vec![remote_root.clone()];
+                let mut files: Vec<(String, String)> = Vec::new();
+                collect_upload_items(
+                    std::path::Path::new(&local),
+                    &remote_root,
+                    0,
+                    &mut dirs,
+                    &mut files,
+                );
+                let _ = events.send(SessionEvent::SftpStatus(format!(
+                    "{} {} ({} {})...",
+                    t("上传文件夹", "Uploading folder"),
+                    dirname,
+                    files.len(),
+                    t("个文件", "files")
+                )));
+                // create_dir on an existing dir fails — ignore so re-uploads merge.
+                for d in &dirs {
+                    let _ = sftp.create_dir(d.as_str()).await;
+                }
+                let mut ok = 0usize;
+                let mut failed = 0usize;
+                for (lp, rp) in &files {
+                    let fname = base_name(rp);
+                    let id = Uuid::new_v4().to_string();
+                    match upload_pipelined(&handle, lp, rp, &fname, &id, &events).await {
+                        Ok(()) => ok += 1,
+                        Err(e) => {
+                            failed += 1;
+                            emit_transfer(&events, &id, &fname, true, 0, 0, 2, &e.to_string());
+                        }
+                    }
+                }
+                if let Ok(entries) = list_dir_impl(&sftp, &remote_dir).await {
+                    let _ = events.send(SessionEvent::SftpEntries {
+                        path: remote_dir.clone(),
+                        entries,
+                    });
+                }
+                let _ = events.send(SessionEvent::SftpStatus(if failed == 0 {
+                    format!(
+                        "{}: {} ({} {})",
+                        t("上传完成", "Uploaded"),
+                        dirname,
+                        ok,
+                        t("个文件", "files")
+                    )
+                } else {
+                    format!(
+                        "{}: {} {} / {} {}",
+                        t("上传结束", "Upload finished"),
+                        ok,
+                        t("成功", "ok"),
+                        failed,
+                        t("失败", "failed")
+                    )
+                }));
+            }
+            SftpCommand::Rename { from, new_name } => {
+                let to = join_remote(&parent_dir(&from), &new_name);
+                match sftp.rename(from.as_str(), to.as_str()).await {
+                    Ok(_) => {
+                        let parent = parent_dir(&from);
+                        if let Ok(entries) = list_dir_impl(&sftp, &parent).await {
+                            let _ = events.send(SessionEvent::SftpEntries {
+                                path: parent,
+                                entries,
+                            });
+                        }
+                        let _ = events.send(SessionEvent::SftpStatus(format!(
+                            "{}: {}",
+                            t("已重命名", "Renamed"),
+                            new_name
+                        )));
+                    }
+                    Err(e) => {
+                        let _ = events.send(SessionEvent::SftpStatus(format!(
+                            "{}: {e}",
+                            t("重命名失败", "Rename failed")
+                        )));
+                    }
+                }
+            }
+            SftpCommand::CreateFile { dir, name } => {
+                let path = join_remote(&dir, &name);
+                // Refuse to clobber an existing entry — sftp.write() would
+                // silently truncate it.
+                if sftp.metadata(path.as_str()).await.is_ok() {
+                    let _ = events.send(SessionEvent::SftpStatus(format!(
+                        "{}: {}",
+                        t("已存在同名文件", "Already exists"),
+                        name
+                    )));
+                } else {
+                    match sftp.write(path.as_str(), b"").await {
+                        Ok(()) => {
+                            if let Ok(entries) = list_dir_impl(&sftp, &dir).await {
+                                let _ = events.send(SessionEvent::SftpEntries {
+                                    path: dir.clone(),
+                                    entries,
+                                });
+                            }
+                            let _ = events.send(SessionEvent::SftpStatus(format!(
+                                "{}: {}",
+                                t("已新建文件", "File created"),
+                                name
+                            )));
+                        }
+                        Err(e) => {
+                            let _ = events.send(SessionEvent::SftpStatus(format!(
+                                "{}: {e}",
+                                t("新建文件失败", "Create file failed")
+                            )));
+                        }
+                    }
+                }
+            }
+            SftpCommand::CreateDir { dir, name } => {
+                let path = join_remote(&dir, &name);
+                match sftp.create_dir(path.as_str()).await {
+                    Ok(_) => {
+                        if let Ok(entries) = list_dir_impl(&sftp, &dir).await {
+                            let _ = events.send(SessionEvent::SftpEntries {
+                                path: dir.clone(),
+                                entries,
+                            });
+                        }
+                        let _ = events.send(SessionEvent::SftpStatus(format!(
+                            "{}: {}",
+                            t("已新建文件夹", "Folder created"),
+                            name
+                        )));
+                    }
+                    Err(e) => {
+                        let _ = events.send(SessionEvent::SftpStatus(format!(
+                            "{}: {e}",
+                            t("新建文件夹失败", "Create folder failed")
                         )));
                     }
                 }
@@ -701,6 +905,89 @@ async fn upload_pipelined(
     Ok(())
 }
 
+/// 在远端路径下拼接子项名（统一处理根目录的结尾斜杠）。
+fn join_remote(dir: &str, name: &str) -> String {
+    format!("{}/{}", dir.trim_end_matches('/'), name)
+}
+
+/// 递归收集本地目录的上传清单：`dirs` 收远端需要创建的目录，`files` 收
+/// (本地路径, 远端路径) 文件对。深度限制防 symlink 自环。
+fn collect_upload_items(
+    local_root: &std::path::Path,
+    remote_root: &str,
+    depth: u32,
+    dirs: &mut Vec<String>,
+    files: &mut Vec<(String, String)>,
+) {
+    if depth > 32 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(local_root) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let rp = join_remote(remote_root, &name);
+        // std::fs::metadata follows symlinks so linked dirs/files upload too.
+        let Ok(meta) = std::fs::metadata(&p) else {
+            continue;
+        };
+        if meta.is_dir() {
+            dirs.push(rp.clone());
+            collect_upload_items(&p, &rp, depth + 1, dirs, files);
+        } else if meta.is_file() {
+            files.push((p.to_string_lossy().to_string(), rp));
+        }
+    }
+}
+
+/// 递归下载远端目录到本地 `local_dir` 下的同名文件夹。
+/// 返回 (成功文件数, 失败文件数)；无权限的子目录静默跳过。
+async fn download_dir_impl(
+    sftp: &SftpSession,
+    remote_root: &str,
+    local_dir: &str,
+    events: &UnboundedSender<SessionEvent>,
+) -> Result<(usize, usize)> {
+    let root_name = base_name(remote_root);
+    let local_root = format!("{}/{}", local_dir.trim_end_matches('/'), root_name);
+    let mut queue = vec![(remote_root.to_string(), local_root)];
+    let mut files: Vec<(String, String)> = Vec::new();
+    let mut depth = 0;
+    while !queue.is_empty() && depth <= 32 {
+        let mut next = Vec::new();
+        for (rdir, ldir) in queue {
+            std::fs::create_dir_all(&ldir)
+                .with_context(|| format!("create local dir {ldir}"))?;
+            for e in list_dir_impl(sftp, &rdir).await.unwrap_or_default() {
+                let lpath = format!("{}/{}", ldir, e.name);
+                if e.is_dir {
+                    next.push((e.full_path, lpath));
+                } else {
+                    files.push((e.full_path, lpath));
+                }
+            }
+        }
+        queue = next;
+        depth += 1;
+    }
+    let mut ok = 0usize;
+    let mut failed = 0usize;
+    for (rp, lp) in &files {
+        let name = base_name(rp);
+        let id = Uuid::new_v4().to_string();
+        match download_impl(sftp, rp, lp, &name, &id, events).await {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                failed += 1;
+                emit_transfer(events, &id, &name, false, 0, 0, 2, &e.to_string());
+            }
+        }
+    }
+    Ok((ok, failed))
+}
+
 fn base_name(path: &str) -> String {
     let sep = |c: char| c == '/' || c == '\\';
     path.trim_end_matches(sep)
@@ -760,6 +1047,37 @@ mod tests {
         assert_eq!(parent_dir("/file"), "/");
         assert_eq!(parent_dir("/"), "/");
         assert_eq!(parent_dir("relative"), "/");
+    }
+
+    #[test]
+    fn join_remote_handles_root_and_nested() {
+        assert_eq!(join_remote("/", "etc"), "/etc");
+        assert_eq!(join_remote("/var/log", "syslog"), "/var/log/syslog");
+        assert_eq!(join_remote("/var/log/", "syslog"), "/var/log/syslog");
+    }
+
+    #[test]
+    fn collect_upload_items_walks_nested_dirs() {
+        // 构造临时目录: root/{a.txt, sub/{b.txt}}
+        let root = std::env::temp_dir().join(format!("libssh-up-{}", std::process::id()));
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        std::fs::write(sub.join("b.txt"), b"b").unwrap();
+
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        collect_upload_items(&root, "/up/root", 0, &mut dirs, &mut files);
+        files.sort();
+
+        assert_eq!(dirs, vec!["/up/root/sub".to_string()]);
+        assert_eq!(files.len(), 2);
+        assert!(files[0].0.ends_with("a.txt"));
+        assert_eq!(files[0].1, "/up/root/a.txt");
+        assert!(files[1].0.ends_with("b.txt"));
+        assert_eq!(files[1].1, "/up/root/sub/b.txt");
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

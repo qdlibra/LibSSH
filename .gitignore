@@ -4,3 +4,5 @@
 **/*.rs.bk
 *.py[cod]
 .DS_Store
+.history/
+.claude/

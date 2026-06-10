@@ -94,10 +94,15 @@ export component TerminalView inherits Rectangle {
     callback sftp-navigate(string);
     callback sftp-download(string);
     callback sftp-upload-clicked(string);
+    callback sftp-upload-folder-clicked(string);
     callback sftp-refresh(string);
     callback sftp-tree-expand(string);
     callback sftp-delete(string);
     callback sftp-edit(string);
+    callback sftp-copy-path(string);
+    callback sftp-rename(string, string);
+    callback sftp-create-file(string, string);
+    callback sftp-create-dir(string, string);
     callback paste-from-clipboard();
     callback copy-terminal-text();
     callback clear-terminal();              // wipe this session's screen buffer
@@ -686,10 +691,15 @@ export component TerminalView inherits Rectangle {
             navigate(path)      => { root.sftp-navigate(path); }
             download(path)      => { root.sftp-download(path); }
             upload-clicked(dir) => { root.sftp-upload-clicked(dir); }
+            upload-folder-clicked(dir) => { root.sftp-upload-folder-clicked(dir); }
             refresh(path)       => { root.sftp-refresh(path); }
             tree-expand(path)   => { root.sftp-tree-expand(path); }
             delete(path)        => { root.sftp-delete(path); }
             edit(path)          => { root.sftp-edit(path); }
+            copy-path(path)     => { root.sftp-copy-path(path); }
+            rename(path, name)  => { root.sftp-rename(path, name); }
+            create-file(dir, name) => { root.sftp-create-file(dir, name); }
+            create-dir(dir, name)  => { root.sftp-create-dir(dir, name); }
             collapse-clicked()  => { root.sftp-panel-collapsed = true; }
         }
     }

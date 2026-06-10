@@ -251,3 +251,30 @@ msgstr "去发布页"
 
 msgid "Installing…"
 msgstr "正在安装…"
+
+msgid "Open"
+msgstr "打开"
+
+msgid "Copy path"
+msgstr "复制路径"
+
+msgid "Rename"
+msgstr "重命名"
+
+msgid "New file"
+msgstr "新建文件"
+
+msgid "New folder"
+msgstr "新建文件夹"
+
+msgid "Upload file"
+msgstr "上传文件"
+
+msgid "Upload folder"
+msgstr "上传文件夹"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "Enter name"
+msgstr "输入名称"

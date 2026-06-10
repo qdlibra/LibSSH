@@ -88,12 +88,24 @@ component SessionRow inherits Rectangle {
             width: 130px;
             overflow: elide;
         }
+        // 地址列：弹性宽度。preferred-width 归零让各行忽略内容宽、
+        // 纯按 stretch 比例分配剩余空间，保证与表头及其它行对齐。
         Text {
-            text: session.host + ":" + session.port;
+            text: session.host;
             color: Theme.text-secondary;
             font-size: Theme.fs-sm;
             vertical-alignment: center;
-            width: 150px;
+            horizontal-stretch: 2;
+            preferred-width: 0;
+            min-width: 100px;
+            overflow: elide;
+        }
+        Text {
+            text: "\{session.port}";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+            width: 44px;
             overflow: elide;
         }
         // Latency probe, colour-graded: <400ms green, 400–800ms amber, >800ms red.
@@ -119,6 +131,8 @@ component SessionRow inherits Rectangle {
             font-size: Theme.fs-sm;
             vertical-alignment: center;
             horizontal-stretch: 1;
+            preferred-width: 0;
+            min-width: 60px;
             overflow: elide;
         }
         SessionActionButton {
@@ -157,7 +171,17 @@ component SessionListHeader inherits Rectangle {
         }
         Text {
             text: @tr("Address");
-            width: 150px;
+            horizontal-stretch: 2;
+            preferred-width: 0;
+            min-width: 100px;
+            color: Theme.text-muted;
+            font-size: Theme.fs-xs;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        Text {
+            text: @tr("Port");
+            width: 44px;
             color: Theme.text-muted;
             font-size: Theme.fs-xs;
             font-weight: 600;
@@ -175,6 +199,8 @@ component SessionListHeader inherits Rectangle {
         Text {
             text: @tr("User");
             horizontal-stretch: 1;
+            preferred-width: 0;
+            min-width: 60px;
             color: Theme.text-muted;
             font-size: Theme.fs-xs;
             font-weight: 600;

@@ -58,16 +58,50 @@ export component SftpPanel inherits Rectangle {
     // --- Callbacks ---------------------------------------------------------
     callback navigate(string);
     callback download(string);
-    callback upload-clicked(string);
+    callback upload-clicked(string);            // 上传文件（弹本地文件选择框）
+    callback upload-folder-clicked(string);     // 上传文件夹（弹本地目录选择框）
     callback refresh(string);
     callback tree-expand(string);   // toggle expand/collapse + navigate
     callback delete(string);        // remove a remote file/dir
     callback edit(string);          // 在应用内编辑器打开远端文件
+    callback copy-path(string);     // 复制远端路径到剪贴板
+    callback rename(string, string);      // (旧完整路径, 新名字)
+    callback create-file(string, string); // (目录, 文件名)
+    callback create-dir(string, string);  // (目录, 文件夹名)
     callback collapse-clicked();
 
     // -----------------------------------------------------------------------
     property <string> path-draft: current-path;
     changed current-path => { root.path-draft = root.current-path; }
+
+    // 目录树宽度（分隔把手左右拖动调整）。
+    in-out property <length> tree-width: 160px;
+
+    // --- 名称输入对话框（重命名 / 新建文件 / 新建文件夹共用） --------------
+    property <bool> name-dialog-open: false;
+    property <int> name-dialog-mode: 0;        // 0=重命名 1=新建文件 2=新建文件夹
+    property <string> name-dialog-target: "";  // 重命名=旧完整路径；新建=所在目录
+    property <string> name-draft: "";
+
+    function open-name-dialog(mode: int, target: string, initial: string) {
+        root.name-dialog-mode = mode;
+        root.name-dialog-target = target;
+        root.name-draft = initial;
+        root.name-dialog-open = true;
+    }
+    function commit-name-dialog() {
+        if (root.name-draft == "") {
+            return;
+        }
+        if (root.name-dialog-mode == 0) {
+            root.rename(root.name-dialog-target, root.name-draft);
+        } else if (root.name-dialog-mode == 1) {
+            root.create-file(root.name-dialog-target, root.name-draft);
+        } else {
+            root.create-dir(root.name-dialog-target, root.name-draft);
+        }
+        root.name-dialog-open = false;
+    }
 
     background: Theme.bg-panel;
 
@@ -161,7 +195,7 @@ export component SftpPanel inherits Rectangle {
 
             // ── Left: directory tree ────────────────────────────────────────
             VerticalLayout {
-                width: 160px;
+                width: root.tree-width;
                 spacing: 0;
 
                 // Tree header
@@ -235,8 +269,31 @@ export component SftpPanel inherits Rectangle {
                 }
             }
 
-            // Vertical separator
-            Rectangle { width: 1px; background: Theme.border-subtle; }
+            // Vertical separator — drag left/right to resize the tree.
+            Rectangle {
+                width: 4px;
+                background: tree-divider-ta.has-hover || tree-divider-ta.pressed
+                    ? Theme.accent
+                    : Theme.border-subtle;
+
+                tree-divider-ta := TouchArea {
+                    mouse-cursor: col-resize;
+                    property <length> press-x;
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down) {
+                            self.press-x = self.mouse-x;
+                        }
+                    }
+                    moved => {
+                        if (self.pressed) {
+                            root.tree-width = clamp(
+                                root.tree-width + self.mouse-x - self.press-x,
+                                100px,
+                                max(120px, root.width - 240px));
+                        }
+                    }
+                }
+            }
 
             // ── Right: file listing ─────────────────────────────────────────
             VerticalLayout {
@@ -307,12 +364,13 @@ export component SftpPanel inherits Rectangle {
                                 }
                             }
 
-                            // Right-click context menu (files: full set; dirs: delete only).
+                            // Right-click context menu (same set for files & dirs;
+                            // Open = enter dir / open file in the built-in editor).
                             row-menu := PopupWindow {
                                 x: row.mx;
                                 y: row.my;
-                                width: 108px;
-                                height: (entry.is-dir ? 1 : 3) * 27px + 8px;
+                                width: 132px;
+                                height: 6 * 27px + 8px;
                                 Rectangle {
                                     background: Theme.bg-panel;
                                     border-radius: Theme.radius-sm;
@@ -323,18 +381,38 @@ export component SftpPanel inherits Rectangle {
                                     VerticalLayout {
                                         padding: 4px;
                                         spacing: 1px;
-                                        if !entry.is-dir : SftpMenuItem {
+                                        SftpMenuItem {
+                                            label: @tr("Open");
+                                            clicked => {
+                                                if (entry.is-dir) {
+                                                    root.navigate(entry.full-path);
+                                                } else {
+                                                    root.edit(entry.full-path);
+                                                }
+                                            }
+                                        }
+                                        SftpMenuItem {
                                             label: @tr("Download");
                                             clicked => { root.download(entry.full-path); }
                                         }
-                                        if !entry.is-dir : SftpMenuItem {
-                                            label: @tr("Edit");
-                                            clicked => { root.edit(entry.full-path); }
+                                        SftpMenuItem {
+                                            label: @tr("Copy path");
+                                            clicked => { root.copy-path(entry.full-path); }
+                                        }
+                                        SftpMenuItem {
+                                            label: @tr("Rename");
+                                            clicked => {
+                                                root.open-name-dialog(0, entry.full-path, entry.name);
+                                            }
                                         }
                                         SftpMenuItem {
                                             label: @tr("Delete");
                                             tint: #d86c6c;
                                             clicked => { root.delete(entry.full-path); }
+                                        }
+                                        SftpMenuItem {
+                                            label: @tr("Refresh");
+                                            clicked => { root.refresh(root.current-path); }
                                         }
                                     }
                                 }
@@ -370,6 +448,73 @@ export component SftpPanel inherits Rectangle {
                                 }
                             }
                         }
+
+                        // Blank tail zone: right-click for directory-level actions
+                        // (refresh / upload / new file / new folder / copy path).
+                        blank-zone := Rectangle {
+                            vertical-stretch: 1;
+                            min-height: 48px;
+                            property <length> bx;
+                            property <length> by;
+
+                            blank-ta := TouchArea {
+                                pointer-event(ev) => {
+                                    if (ev.kind == PointerEventKind.down
+                                            && ev.button == PointerEventButton.right) {
+                                        blank-zone.bx = self.mouse-x;
+                                        blank-zone.by = self.mouse-y;
+                                        blank-menu.show();
+                                    }
+                                }
+                            }
+
+                            blank-menu := PopupWindow {
+                                x: blank-zone.bx;
+                                y: blank-zone.by;
+                                width: 132px;
+                                height: 6 * 27px + 8px;
+                                Rectangle {
+                                    background: Theme.bg-panel;
+                                    border-radius: Theme.radius-sm;
+                                    border-width: 1px;
+                                    border-color: Theme.border-strong;
+                                    drop-shadow-blur: 12px;
+                                    drop-shadow-color: #00000060;
+                                    VerticalLayout {
+                                        padding: 4px;
+                                        spacing: 1px;
+                                        SftpMenuItem {
+                                            label: @tr("Refresh");
+                                            clicked => { root.refresh(root.current-path); }
+                                        }
+                                        SftpMenuItem {
+                                            label: @tr("Upload file");
+                                            clicked => { root.upload-clicked(root.current-path); }
+                                        }
+                                        SftpMenuItem {
+                                            label: @tr("Upload folder");
+                                            clicked => { root.upload-folder-clicked(root.current-path); }
+                                        }
+                                        SftpMenuItem {
+                                            label: @tr("New file");
+                                            clicked => {
+                                                root.open-name-dialog(1, root.current-path, "");
+                                            }
+                                        }
+                                        SftpMenuItem {
+                                            label: @tr("New folder");
+                                            clicked => {
+                                                root.open-name-dialog(2, root.current-path, "");
+                                            }
+                                        }
+                                        SftpMenuItem {
+                                            label: @tr("Copy path");
+                                            clicked => { root.copy-path(root.current-path); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -388,6 +533,97 @@ export component SftpPanel inherits Rectangle {
                 height: parent.height;
                 overflow: elide;
                 width: parent.width - 16px;
+            }
+        }
+    }
+
+    // --- Name input dialog (rename / new file / new folder) ----------------
+    if root.name-dialog-open : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #00000060;
+
+        // Swallow clicks behind the dialog; clicking the mask cancels.
+        TouchArea {
+            clicked => { root.name-dialog-open = false; }
+        }
+
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: max(8px, (parent.height - self.height) / 2);
+            width: min(320px, parent.width - 24px);
+            height: 108px;
+            background: Theme.bg-panel;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 14px;
+            drop-shadow-color: #00000070;
+
+            // Block the mask's cancel-click inside the dialog body.
+            TouchArea {}
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                Text {
+                    text: root.name-dialog-mode == 0 ? @tr("Rename")
+                        : root.name-dialog-mode == 1 ? @tr("New file")
+                        : @tr("New folder");
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-md;
+                    font-weight: 700;
+                }
+
+                name-edit := LineEdit {
+                    text <=> root.name-draft;
+                    placeholder-text: @tr("Enter name");
+                    font-size: Theme.fs-sm;
+                    accepted => { root.commit-name-dialog(); }
+                    init => { self.focus(); }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    Rectangle {
+                        width: 64px; height: 24px;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        background: cancel-ta.has-hover ? Theme.bg-hover : transparent;
+                        cancel-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.name-dialog-open = false; }
+                        }
+                        Text {
+                            text: @tr("Cancel");
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-xs;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 64px; height: 24px;
+                        border-radius: Theme.radius-sm;
+                        background: ok-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                        ok-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.commit-name-dialog(); }
+                        }
+                        Text {
+                            text: @tr("OK");
+                            color: #ffffff;
+                            font-size: Theme.fs-xs;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
             }
         }
     }

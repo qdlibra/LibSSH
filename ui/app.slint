@@ -209,10 +209,19 @@ export component AppWindow inherits Window {
     callback sftp-upload-clicked(string /* tab-id */, string /* remote-dir */);
     // Refresh the current directory listing.
     callback sftp-refresh(string /* tab-id */, string /* path */);
+    // Trigger a folder upload: Rust opens a folder-picker dialog then transfers.
+    callback sftp-upload-folder-clicked(string /* tab-id */, string /* remote-dir */);
     // Toggle expand/collapse of a tree node (also navigates to that directory).
     callback sftp-tree-expand(string /* tab-id */, string /* path */);
     callback sftp-delete(string /* tab-id */, string /* path */);
     callback sftp-edit(string /* tab-id */, string /* path */);
+    // Copy a remote path to the system clipboard.
+    callback sftp-copy-path(string /* tab-id */, string /* path */);
+    // Rename a remote entry: (tab, full path, new name).
+    callback sftp-rename(string /* tab-id */, string /* path */, string /* new-name */);
+    // Create an empty file / a directory: (tab, parent dir, name).
+    callback sftp-create-file(string /* tab-id */, string /* dir */, string /* name */);
+    callback sftp-create-dir(string /* tab-id */, string /* dir */, string /* name */);
 
     // --- Clipboard callbacks ----------------------------------------------
     // Paste clipboard text into the active terminal.
@@ -317,10 +326,15 @@ export component AppWindow inherits Window {
                     sftp-navigate(path) => { root.sftp-navigate(term.id, path); }
                     sftp-download(path) => { root.sftp-download(term.id, path); }
                     sftp-upload-clicked(dir) => { root.sftp-upload-clicked(term.id, dir); }
+                    sftp-upload-folder-clicked(dir) => { root.sftp-upload-folder-clicked(term.id, dir); }
                     sftp-refresh(path) => { root.sftp-refresh(term.id, path); }
                     sftp-tree-expand(path) => { root.sftp-tree-expand(term.id, path); }
                     sftp-delete(path) => { root.sftp-delete(term.id, path); }
                     sftp-edit(path) => { root.sftp-edit(term.id, path); }
+                    sftp-copy-path(path) => { root.sftp-copy-path(term.id, path); }
+                    sftp-rename(path, name) => { root.sftp-rename(term.id, path, name); }
+                    sftp-create-file(dir, name) => { root.sftp-create-file(term.id, dir, name); }
+                    sftp-create-dir(dir, name) => { root.sftp-create-dir(term.id, dir, name); }
                     paste-from-clipboard() => { root.paste-from-clipboard(term.id); }
                     copy-terminal-text() => { root.copy-terminal-text(term.id); }
                     clear-terminal() => { root.clear-terminal(term.id); }

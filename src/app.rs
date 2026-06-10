@@ -1631,6 +1631,72 @@ fn wire_callbacks(
         }
     });
 
+    let upfolder_sftp = sftp_handles.clone();
+    window.on_sftp_upload_folder_clicked(move |tab_id: SharedString, remote_dir: SharedString| {
+        let tab_id = tab_id.to_string();
+        let remote_dir = remote_dir.to_string();
+        let upfolder_sftp = upfolder_sftp.clone();
+        std::thread::spawn(move || {
+            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                if let Ok(handles) = upfolder_sftp.lock() {
+                    if let Some(handle) = handles.get(&tab_id) {
+                        handle.upload_dir(folder.to_string_lossy().to_string(), remote_dir);
+                    }
+                }
+            }
+        });
+    });
+
+    let copy_path_weak = window.as_weak();
+    window.on_sftp_copy_path(move |tab_id: SharedString, path: SharedString| {
+        let ok = arboard::Clipboard::new()
+            .and_then(|mut cb| cb.set_text(path.to_string()))
+            .is_ok();
+        if let Some(w) = copy_path_weak.upgrade() {
+            let msg: SharedString = if ok {
+                format!("{}: {}", crate::i18n::t("已复制路径", "Path copied"), path).into()
+            } else {
+                crate::i18n::t("复制路径失败", "Copy path failed").into()
+            };
+            set_terminal_row(&w, tab_id.as_str(), |row| {
+                row.sftp_status = msg.clone();
+            });
+        }
+    });
+
+    let rename_sftp = sftp_handles.clone();
+    window.on_sftp_rename(
+        move |tab_id: SharedString, path: SharedString, new_name: SharedString| {
+            if let Ok(handles) = rename_sftp.lock() {
+                if let Some(handle) = handles.get(tab_id.as_str()) {
+                    handle.rename(path.to_string(), new_name.to_string());
+                }
+            }
+        },
+    );
+
+    let mkfile_sftp = sftp_handles.clone();
+    window.on_sftp_create_file(
+        move |tab_id: SharedString, dir: SharedString, name: SharedString| {
+            if let Ok(handles) = mkfile_sftp.lock() {
+                if let Some(handle) = handles.get(tab_id.as_str()) {
+                    handle.create_file(dir.to_string(), name.to_string());
+                }
+            }
+        },
+    );
+
+    let mkdir_sftp = sftp_handles.clone();
+    window.on_sftp_create_dir(
+        move |tab_id: SharedString, dir: SharedString, name: SharedString| {
+            if let Ok(handles) = mkdir_sftp.lock() {
+                if let Some(handle) = handles.get(tab_id.as_str()) {
+                    handle.create_dir(dir.to_string(), name.to_string());
+                }
+            }
+        },
+    );
+
     let delete_sftp = sftp_handles.clone();
     window.on_sftp_delete(move |tab_id: SharedString, path: SharedString| {
         if let Ok(handles) = delete_sftp.lock() {
@@ -2538,21 +2604,38 @@ fn resize_terminal_buffer(
             return (cols, rows, false);
         }
         if (rows as u16) < old_rows && !buf.parser.screen().alternate_screen() {
-            let delta = old_rows - rows as u16;
-            let cols_now = buf.parser.screen().size().1;
             let s = buf.parser.screen();
-            for r in 0..delta {
-                let line = build_row(s, r, cols_now);
-                if line_has_visible_content(&line) {
-                    buf.history.push(line);
+            let cols_now = s.size().1;
+            // The last row that must remain on the shrunken screen: the cursor
+            // row, or the lowest row with visible content below it.
+            let cursor_row = s.cursor_position().0;
+            let mut keep_last = cursor_row;
+            for r in (cursor_row + 1..old_rows).rev() {
+                if line_has_visible_content(&build_row(s, r, cols_now)) {
+                    keep_last = r;
+                    break;
                 }
             }
-            if buf.history.len() > MAX_HISTORY {
-                let drop = buf.history.len() - MAX_HISTORY;
-                buf.history.drain(0..drop);
+            // Scroll up only what is needed to keep `keep_last` inside the new
+            // grid. A fixed old-new delta here shoves a mostly-empty screen's
+            // content into history while the cursor stays at its old row, which
+            // paints a tall blank gap above the prompt after mouse-up (the
+            // "extra newlines / huge line spacing" drag bug).
+            let need = (keep_last + 1).saturating_sub(rows as u16);
+            if need > 0 {
+                for r in 0..need {
+                    let line = build_row(s, r, cols_now);
+                    if line_has_visible_content(&line) {
+                        buf.history.push(line);
+                    }
+                }
+                if buf.history.len() > MAX_HISTORY {
+                    let drop = buf.history.len() - MAX_HISTORY;
+                    buf.history.drain(0..drop);
+                }
+                let scroll_up = format!("\x1b[{need}S");
+                buf.parser.process(scroll_up.as_bytes());
             }
-            let scroll_up = format!("\x1b[{delta}S");
-            buf.parser.process(scroll_up.as_bytes());
         }
         buf.parser.set_size(rows as u16, cols as u16);
         buf.prev.clear();
@@ -3144,6 +3227,79 @@ mod tests {
 
         assert_eq!((cols, rows), (80, 24));
         assert!(!applied, "网格未变时必须短路，不得重复 resize");
+    }
+
+    #[test]
+    fn terminal_resize_shrink_keeps_sparse_content_anchored() {
+        // 「上下拖动文件管理器松手后，提示符上方出现大段空行/行距过大」回归：
+        // 旧实现缩小 rows 时固定滚动 old-new 行；屏幕内容不足该差值时内容被
+        // 整体滚出屏幕、光标却留在原行号，提示符上方留下大片空白。
+        let tab_id = "term-shrink-sparse";
+        let bufs: TermBuffers = Arc::new(Mutex::new(HashMap::new()));
+        let mut buf = TermBuffer {
+            parser: vt100::Parser::new(40, 80, 5000),
+            find_query: String::new(),
+            sel: None,
+            history: Vec::new(),
+            prev: Vec::new(),
+            view_offset: 0,
+            displayed_text: Vec::new(),
+            csi_state: CsiState::Normal,
+        };
+        // 模拟 banner + 提示符：两行内容，光标停在第 2 行（row 1）行尾。
+        buf.ingest(b"welcome to server\r\nuser@host:~$ ");
+        bufs.lock().unwrap().insert(tab_id.to_string(), buf);
+        let last_size = Arc::new(Mutex::new((80u32, 40u32)));
+
+        // 终端区域被压矮：40 行 → 24 行。
+        let (_, _, applied) = resize_terminal_buffer(tab_id, 80.0, 24.0, &bufs, &last_size);
+        assert!(applied);
+
+        let m = bufs.lock().unwrap();
+        let b = &m[tab_id];
+        let s = b.parser.screen();
+        assert_eq!(s.size(), (24, 80));
+        // 内容原位保留、光标仍跟随提示符行、history 不得吞掉屏幕内容。
+        assert!(b.history.is_empty(), "稀疏屏幕缩小时不得把内容滚入 history");
+        assert_eq!(build_row(s, 0, 80).0.trim_end(), "welcome to server");
+        assert!(build_row(s, 1, 80).0.starts_with("user@host:~$"));
+        assert_eq!(s.cursor_position().0, 1);
+    }
+
+    #[test]
+    fn terminal_resize_shrink_scrolls_full_screen_into_history() {
+        // 光标深于新屏幕时仍需滚动：只滚「光标行落入新屏」所需的最小行数。
+        let tab_id = "term-shrink-full";
+        let bufs: TermBuffers = Arc::new(Mutex::new(HashMap::new()));
+        let mut buf = TermBuffer {
+            parser: vt100::Parser::new(40, 80, 5000),
+            find_query: String::new(),
+            sel: None,
+            history: Vec::new(),
+            prev: Vec::new(),
+            view_offset: 0,
+            displayed_text: Vec::new(),
+            csi_state: CsiState::Normal,
+        };
+        let mut feed = Vec::new();
+        for i in 0..30 {
+            feed.extend_from_slice(format!("line{i}\r\n").as_bytes());
+        }
+        buf.ingest(&feed); // 光标落在 row 30（空行）
+        bufs.lock().unwrap().insert(tab_id.to_string(), buf);
+        let last_size = Arc::new(Mutex::new((80u32, 40u32)));
+
+        let (_, _, applied) = resize_terminal_buffer(tab_id, 80.0, 24.0, &bufs, &last_size);
+        assert!(applied);
+
+        let m = bufs.lock().unwrap();
+        let b = &m[tab_id];
+        let s = b.parser.screen();
+        // need = (30+1) - 24 = 7：行 0..6 进 history，新屏顶行是 line7。
+        assert_eq!(b.history.len(), 7);
+        assert_eq!(b.history[0].0.trim_end(), "line0");
+        assert_eq!(build_row(s, 0, 80).0.trim_end(), "line7");
+        assert_eq!(s.cursor_position().0, 23);
     }
 
     #[test]
