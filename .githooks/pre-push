@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# LibSSH pre-push hook：推送前运行 clippy（与 CI 参数一致）。
+# clippy 全量编译较慢，故放在 pre-push 而非 pre-commit。
+# 启用方式（仓库内执行一次）：git config core.hooksPath .githooks
+# 临时跳过（不推荐）：SKIP_HOOKS=1 git push ...
+set -u
+
+if [ "${SKIP_HOOKS:-0}" = "1" ]; then
+    echo "[pre-push] SKIP_HOOKS=1，跳过本地检查"
+    exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "[pre-push] 未找到 cargo，跳过 clippy 检查" >&2
+    exit 0
+fi
+
+echo "[pre-push] cargo clippy --all-targets --locked -- -D warnings ..."
+if ! cargo clippy --all-targets --locked -- -D warnings; then
+    cat >&2 <<'EOF'
+
+[pre-push] ✗ clippy 检查未通过（与 CI 同参数，CI 也会失败）。
+逐条修复上方警告后重新推送。如需跳过本次检查（不推荐）：
+
+    SKIP_HOOKS=1 git push ...
+EOF
+    exit 1
+fi
+
+echo "[pre-push] ✓ clippy 检查通过"

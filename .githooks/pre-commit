@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# LibSSH pre-commit hook：提交前运行 cargo fmt 检查，防止 CI 挂在 fmt 步骤。
+# 启用方式（仓库内执行一次）：git config core.hooksPath .githooks
+# 临时跳过（不推荐）：SKIP_HOOKS=1 git commit ...
+set -u
+
+if [ "${SKIP_HOOKS:-0}" = "1" ]; then
+    echo "[pre-commit] SKIP_HOOKS=1，跳过本地检查"
+    exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "[pre-commit] 未找到 cargo，跳过格式检查" >&2
+    exit 0
+fi
+
+echo "[pre-commit] cargo fmt --all --check ..."
+if ! cargo fmt --all --check; then
+    cat >&2 <<'EOF'
+
+[pre-commit] ✗ 格式检查未通过。修复方式：
+
+    cargo fmt --all
+
+格式化后重新 git add 并提交。如需跳过本次检查（不推荐）：
+
+    SKIP_HOOKS=1 git commit ...
+EOF
+    exit 1
+fi
+
+echo "[pre-commit] ✓ 格式检查通过"

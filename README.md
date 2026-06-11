@@ -444,6 +444,18 @@ CI 在 GitHub Actions 中执行：
 - `cargo clippy --all-targets --locked -- -D warnings`
 - `cargo test --locked`
 
+### Git hooks（本地检查）
+
+为避免提交后才在 CI 发现格式 / clippy 问题，仓库内置了纯 shell 的 git hooks（macOS / Linux 通用，无额外依赖）。clone 后执行一次：
+
+```bash
+git config core.hooksPath .githooks
+```
+
+- `pre-commit`：运行 `cargo fmt --all --check`，失败时提示执行 `cargo fmt --all` 修复。
+- `pre-push`：运行 `cargo clippy --all-targets --locked -- -D warnings`（与 CI 同参数；全量编译较慢，故放在推送前而非提交前）。
+- 临时跳过（不推荐）：`SKIP_HOOKS=1 git commit ...` 或 `SKIP_HOOKS=1 git push ...`。
+
 ### 目录结构
 
 ```text
