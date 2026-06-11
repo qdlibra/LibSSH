@@ -6,6 +6,7 @@ mod config;
 mod history;
 mod i18n;
 mod logbuf;
+mod markdown;
 mod proxy;
 mod secrets;
 mod sftp;

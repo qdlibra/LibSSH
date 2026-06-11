@@ -52,6 +52,8 @@ semver = "1"
 sha2 = "0.10"
 # 下载前磁盘空间预检（跨平台 available_space）。
 fs2 = "0.4"
+# 更新弹窗：把 release notes 的 markdown 解析成块序列做原生渲染（关默认 html 渲染器，仅用解析器）。
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [build-dependencies]
 slint-build = "1.8"

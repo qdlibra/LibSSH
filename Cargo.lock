@@ -16,6 +16,7 @@ dependencies = [
  "futures",
  "i-slint-backend-winit",
  "keyring",
+ "pulldown-cmark",
  "rand 0.8.6",
  "reqwest",
  "rfd",
