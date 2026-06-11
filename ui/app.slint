@@ -10,7 +10,7 @@ import "fonts/CascadiaMono-Bold.ttf";
 import "fonts/MaterialIcons-Regular.ttf";
 
 import { Theme } from "theme.slint";
-import { TextEdit, Palette, ListView } from "std-widgets.slint";
+import { TextEdit, Palette, ListView, ScrollView } from "std-widgets.slint";
 import { PrimaryButton, GhostButton } from "widgets.slint";
 import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
@@ -34,6 +34,13 @@ export struct TransferInfo {
     percent: float,   // 0.0..1.0
     state: int,       // 0 active / 1 done / 2 error
     is-upload: bool,
+}
+
+export struct NoteBlock {
+    kind: string,    // "para" | "h" | "ul" | "ol" | "code" | "hr"
+    text: string,
+    level: int,      // 标题级别 1..6；或列表缩进深度
+    marker: string,  // 有序 "1."；无序 "•"；其余空
 }
 
 export struct TerminalState {
@@ -128,6 +135,7 @@ export component AppWindow inherits Window {
     in property <string> update-version;         // 新版本号 "0.2.4"
     in property <string> update-current;         // 当前版本 "0.2.3"
     in property <string> update-notes;           // release notes
+    in property <[NoteBlock]> update-note-blocks;   // 解析后的 release notes 块
     in property <string> update-phase: "prompt"; // prompt|downloading|verifying|ready|error
     in property <float> update-progress;         // 0.0 - 1.0
     in property <string> update-error;
@@ -1171,8 +1179,8 @@ export component AppWindow inherits Window {
         Rectangle {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            width: 420px;
-            height: 460px;
+            width: min(parent.width * 0.92, 560px);
+            height: min(parent.height * 0.92, 600px);
             background: Theme.bg-panel;
             border-radius: Theme.radius-md;
             border-width: 1px;
@@ -1198,16 +1206,66 @@ export component AppWindow inherits Window {
 
                 Rectangle { height: 1px; background: Theme.border-subtle; }
 
-                // 更新说明（可滚动）
-                Flickable {
+                // 更新说明（markdown 块级渲染，可滚动）
+                ScrollView {
                     vertical-stretch: 1;
-                    viewport-width: self.width;
-                    viewport-height: max(self.height, notes-text.preferred-height);
-                    notes-text := Text {
-                        text: root.update-notes;
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-sm;
-                        wrap: word-wrap;
+                    VerticalLayout {
+                        width: parent.visible-width;
+                        spacing: 6px;
+                        for b in root.update-note-blocks : VerticalLayout {
+                            // 每块一个 VerticalLayout 容器：只有一个 if 命中，高度自适应。
+                            if b.kind == "h" : Text {
+                                text: b.text;
+                                color: Theme.text-primary;
+                                font-weight: 700;
+                                font-size: b.level <= 1
+                                    ? Theme.fs-lg
+                                    : (b.level == 2 ? Theme.fs-md : Theme.fs-sm);
+                                wrap: word-wrap;
+                            }
+                            if b.kind == "para" : Text {
+                                text: b.text;
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-sm;
+                                wrap: word-wrap;
+                            }
+                            if b.kind == "ul" || b.kind == "ol" : HorizontalLayout {
+                                padding-left: b.level * 14px;
+                                spacing: 6px;
+                                Text {
+                                    text: b.marker;
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-sm;
+                                }
+                                Text {
+                                    text: b.text;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-sm;
+                                    wrap: word-wrap;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                            if b.kind == "code" : Rectangle {
+                                horizontal-stretch: 1;
+                                background: Theme.bg-panel-alt;
+                                border-radius: Theme.radius-sm;
+                                VerticalLayout {
+                                    padding: 8px;
+                                    Text {
+                                        text: b.text;
+                                        font-family: Theme.font-mono;
+                                        font-size: Theme.fs-sm;
+                                        color: Theme.text-primary;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                            if b.kind == "hr" : Rectangle {
+                                height: 1px;
+                                horizontal-stretch: 1;
+                                background: Theme.border-subtle;
+                            }
+                        }
                     }
                 }
 
