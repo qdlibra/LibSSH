@@ -435,8 +435,12 @@ export component SftpPanel inherits Rectangle {
                                 // 图标组：加载中的目录在文件夹图标前平滑展开一个
                                 // 旋转的加载指示（spacing:0 的子布局保证未加载时
                                 // 图标位置与原来分毫不差，不影响列对齐）。
+                                // horizontal-stretch 必须归零：嵌套 layout 默认
+                                // stretch=1，会与名称列对半瓜分剩余宽度，把名称
+                                // 推到行中间（看起来像"居中对齐"）。
                                 HorizontalLayout {
                                     spacing: 0;
+                                    horizontal-stretch: 0;
                                     spin-slot := Rectangle {
                                         property <bool> active: entry.is-dir
                                             && root.loading
