@@ -244,6 +244,14 @@ fn contains_sensitive_assignment(command: &str) -> bool {
         && (command.contains('=') || command.contains(':'))
 }
 
+/// 一条用户自定义快捷命令（全局，不区分会话）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuickCommand {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -271,6 +279,9 @@ pub struct ConfigFile {
     /// 用户"跳过此版本"记录的 tag，如 "v0.2.4"。
     #[serde(default)]
     pub skipped_version: Option<String>,
+    /// 底部命令栏的快捷命令（全局共享）。
+    #[serde(default)]
+    pub quick_commands: Vec<QuickCommand>,
 }
 
 impl Default for ConfigFile {
@@ -283,6 +294,7 @@ impl Default for ConfigFile {
             auto_check_update: true,
             last_update_check: None,
             skipped_version: None,
+            quick_commands: Vec::new(),
         }
     }
 }
@@ -398,6 +410,21 @@ impl ConfigStore {
 
     pub fn set_skipped_version(&mut self, tag: Option<String>) {
         self.cache.skipped_version = tag;
+    }
+
+    pub fn quick_commands(&self) -> &[QuickCommand] {
+        &self.cache.quick_commands
+    }
+
+    pub fn upsert_quick_command(&mut self, qc: QuickCommand) {
+        match self.cache.quick_commands.iter_mut().find(|x| x.id == qc.id) {
+            Some(existing) => *existing = qc,
+            None => self.cache.quick_commands.push(qc),
+        }
+    }
+
+    pub fn remove_quick_command(&mut self, id: &str) {
+        self.cache.quick_commands.retain(|x| x.id != id);
     }
 
     pub fn ai_skill(&self) -> &AiSkillConfig {
@@ -589,6 +616,35 @@ mod tests {
         let loaded = ConfigStore::load_at(path).unwrap();
         assert!(loaded.auto_check_update()); // 缺字段默认开
         assert_eq!(loaded.skipped_version(), None);
+    }
+
+    #[test]
+    fn quick_commands_round_trip_upsert_and_remove() {
+        let path = test_path("quick-commands");
+        let mut store = ConfigStore::load_at(path.clone()).unwrap();
+        store.upsert_quick_command(QuickCommand {
+            id: "q1".into(),
+            name: "重启nginx".into(),
+            command: "systemctl restart nginx".into(),
+        });
+        store.upsert_quick_command(QuickCommand {
+            id: "q1".into(),
+            name: "重启nginx".into(),
+            command: "sudo systemctl restart nginx".into(),
+        });
+        store.save().unwrap();
+
+        let loaded = ConfigStore::load_at(path.clone()).unwrap();
+        assert_eq!(loaded.quick_commands().len(), 1);
+        assert_eq!(
+            loaded.quick_commands()[0].command,
+            "sudo systemctl restart nginx"
+        );
+
+        let mut loaded = loaded;
+        loaded.remove_quick_command("q1");
+        loaded.save().unwrap();
+        assert!(ConfigStore::load_at(path).unwrap().quick_commands().is_empty());
     }
 
     #[test]

@@ -206,7 +206,7 @@ fn initialise_models(window: &AppWindow, store: &ConfigStore) -> AppModels {
     window.set_transfers(empty_model::<TransferInfo>());
 
     window.set_command_suggestions(empty_model::<SharedString>());
-    window.set_quick_commands(empty_model::<QuickCmdInfo>());
+    sync_quick_commands_to_model(store, window);
     window.set_net_top_history(ModelRc::from(Rc::new(VecModel::from(vec![0.0; 60]))));
     window.set_net_bot_history(ModelRc::from(Rc::new(VecModel::from(vec![0.0; 60]))));
     window.set_net_ifaces(empty_model::<SharedString>());
@@ -553,6 +553,20 @@ fn spawn_latency_probes(
             });
         });
     }
+}
+
+/// 把 config 里的快捷命令同步到 UI 模型（增删改后整体重建，量小无所谓）。
+fn sync_quick_commands_to_model(store: &ConfigStore, window: &AppWindow) {
+    let rows: Vec<QuickCmdInfo> = store
+        .quick_commands()
+        .iter()
+        .map(|q| QuickCmdInfo {
+            id: q.id.clone().into(),
+            name: q.name.clone().into(),
+            command: q.command.clone().into(),
+        })
+        .collect();
+    window.set_quick_commands(ModelRc::from(Rc::new(VecModel::from(rows))));
 }
 
 /// Update a single quick-connect row's latency by session id.
@@ -999,6 +1013,75 @@ fn wire_callbacks(
             if let Some(t) = bar_trackers.lock().unwrap().get_mut(tab_id.as_str()) {
                 t.reset();
             }
+        }
+    });
+
+    // 快捷命令：管理对话框预填、保存（新建/编辑）、删除。
+    let qcm_store = store.clone();
+    let weak = window.as_weak();
+    window.on_quick_cmd_manage(move |id: SharedString| {
+        if let Some(w) = weak.upgrade() {
+            let s = qcm_store.borrow();
+            let existing = s.quick_commands().iter().find(|q| q.id == id.as_str());
+            w.set_qc_dialog_id(id.clone());
+            w.set_qc_dialog_name(
+                existing
+                    .map(|q| q.name.clone())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            w.set_qc_dialog_command(
+                existing
+                    .map(|q| q.command.clone())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            w.set_qc_dialog_open(true);
+        }
+    });
+
+    let qcs_store = store.clone();
+    let weak = window.as_weak();
+    window.on_quick_cmd_submit(
+        move |id: SharedString, name: SharedString, command: SharedString| {
+            let name = name.trim().to_string();
+            let command = command.trim().to_string();
+            if command.is_empty() {
+                return;
+            }
+            {
+                let mut s = qcs_store.borrow_mut();
+                s.upsert_quick_command(crate::config::QuickCommand {
+                    id: if id.is_empty() {
+                        uuid::Uuid::new_v4().to_string()
+                    } else {
+                        id.to_string()
+                    },
+                    name: if name.is_empty() { command.clone() } else { name },
+                    command,
+                });
+                if let Err(e) = s.save() {
+                    tracing::warn!("save quick command failed: {e:#}");
+                }
+            }
+            if let Some(w) = weak.upgrade() {
+                sync_quick_commands_to_model(&qcs_store.borrow(), &w);
+            }
+        },
+    );
+
+    let qcd_store = store.clone();
+    let weak = window.as_weak();
+    window.on_quick_cmd_delete(move |id: SharedString| {
+        {
+            let mut s = qcd_store.borrow_mut();
+            s.remove_quick_command(id.as_str());
+            if let Err(e) = s.save() {
+                tracing::warn!("save quick command failed: {e:#}");
+            }
+        }
+        if let Some(w) = weak.upgrade() {
+            sync_quick_commands_to_model(&qcd_store.borrow(), &w);
         }
     });
 
