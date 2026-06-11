@@ -34,6 +34,80 @@ const BUILTIN_DENIED_COMMANDS: &[&str] = &[
     "security find-generic-password",
 ];
 
+/// 只读诊断命令预设：`LibSSH skill policy allow-preset readonly` 一键导入。
+/// 多词条目只放行该子命令（前缀匹配按词边界，见 `command_matches_rule`）。
+/// 刻意不收裸 `ip` / `docker` / `kubectl` / `mount`——它们的子命令含写操作；
+/// `find` / `wget` / `curl` 的写能力是宽松集已知权衡（spec「安全边界」节）。
+pub const READONLY_PRESET: &[&str] = &[
+    // 系统状态
+    "uptime",
+    "w",
+    "who",
+    "last",
+    "date",
+    "hostname",
+    "uname",
+    "whoami",
+    "id",
+    "nproc",
+    "lscpu",
+    "lsblk",
+    "findmnt",
+    // 文件只读
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "stat",
+    "file",
+    "wc",
+    "du",
+    "df",
+    "find",
+    "grep",
+    // 进程/资源
+    "ps",
+    "top",
+    "free",
+    "vmstat",
+    "iostat",
+    "lsof",
+    // 服务/日志
+    "systemctl status",
+    "journalctl",
+    "dmesg",
+    // 网络诊断
+    "netstat",
+    "ss",
+    "ip addr show",
+    "ip route show",
+    "ping",
+    "traceroute",
+    "dig",
+    "nslookup",
+    "host",
+    "curl",
+    "wget",
+    // 容器/编排（内置 deny 已拦 kubectl get/describe secret）
+    "docker ps",
+    "docker logs",
+    "docker images",
+    "docker stats",
+    "kubectl get",
+    "kubectl describe",
+    "kubectl logs",
+    // 计划任务
+    "crontab -l",
+];
+
+/// 按名字取预设清单；未知名字返回 None（调用方负责报错口径）。
+pub fn preset_commands(name: &str) -> Option<&'static [&'static str]> {
+    match name {
+        "readonly" => Some(READONLY_PRESET),
+        _ => None,
+    }
+}
+
 /// A secret string whose heap buffer is zeroed when dropped.
 #[derive(Clone, Default)]
 pub struct Secret(String);
@@ -586,6 +660,63 @@ mod tests {
         assert!(policy.evaluate_command("rm -rf /").is_err());
         assert!(policy.evaluate_command("env").is_err());
         assert!(policy.evaluate_command("echo token=abc123").is_err());
+    }
+
+    #[test]
+    fn readonly_preset_commands_all_pass_policy_evaluation() {
+        let policy = AiSkillConfig {
+            enabled: true,
+            allowed_commands: READONLY_PRESET.iter().map(|s| s.to_string()).collect(),
+            denied_commands: Vec::new(),
+        };
+        for cmd in READONLY_PRESET {
+            assert!(
+                policy.evaluate_command(cmd).is_ok(),
+                "preset command should pass: {cmd}"
+            );
+        }
+        // 带参数的典型形态也要落在词边界前缀内
+        assert!(policy.evaluate_command("df -h").is_ok());
+        assert!(policy
+            .evaluate_command("journalctl -u nginx --since today")
+            .is_ok());
+        assert!(policy
+            .evaluate_command("docker logs --tail 100 web")
+            .is_ok());
+        assert!(policy.evaluate_command("systemctl status sshd").is_ok());
+    }
+
+    #[test]
+    fn readonly_preset_does_not_unlock_dangerous_commands() {
+        let policy = AiSkillConfig {
+            enabled: true,
+            allowed_commands: READONLY_PRESET.iter().map(|s| s.to_string()).collect(),
+            denied_commands: Vec::new(),
+        };
+        for cmd in [
+            "rm -rf /",           // 内置 deny
+            "sudo ls",            // 内置 deny
+            "env",                // 内置 deny
+            "kubectl get secret", // 内置 deny 优先于预设的 kubectl get
+            "docker rm web",      // 预设只收 docker 只读子命令
+            "docker exec -it web sh",
+            "kubectl delete pod web",
+            "mount /dev/sda1 /mnt",    // 刻意不收 mount
+            "crontab -r",              // 预设只收 crontab -l
+            "ip link set eth0 down",   // 预设只收 ip addr show / ip route show
+            "systemctl restart nginx", // 预设只收 systemctl status
+        ] {
+            assert!(
+                policy.evaluate_command(cmd).is_err(),
+                "must stay blocked: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn preset_lookup_finds_readonly_and_rejects_unknown() {
+        assert_eq!(preset_commands("readonly"), Some(READONLY_PRESET));
+        assert_eq!(preset_commands("yolo"), None);
     }
 
     #[test]
