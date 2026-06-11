@@ -13,6 +13,8 @@ enum CliAction {
     PolicyDeny(String),
     PolicyRemoveAllow(String),
     PolicyRemoveDeny(String),
+    PolicyPresets,
+    PolicyAllowPreset(String),
     Check { command: String },
     Run { session: String, command: String },
 }
@@ -72,6 +74,25 @@ pub fn run_args(args: &[String]) -> Result<()> {
             remove_value(&mut store.ai_skill_mut().denied_commands, &command);
             store.save()?;
             print_json(&StatusMessage::ok("denied command removed"))?;
+        }
+        CliAction::PolicyPresets => {
+            print_json(&preset_listing())?;
+        }
+        CliAction::PolicyAllowPreset(name) => {
+            let commands = crate::config::preset_commands(&name)
+                .with_context(|| format!("unknown preset: {name} (available: readonly)"))?;
+            let mut store = ConfigStore::load()?;
+            let before = store.ai_skill().allowed_commands.len();
+            for command in commands {
+                add_unique(
+                    &mut store.ai_skill_mut().allowed_commands,
+                    (*command).to_string(),
+                );
+            }
+            store.save()?;
+            let added = store.ai_skill().allowed_commands.len() - before;
+            let message = format!("preset {name} applied ({added} commands added)");
+            print_json(&StatusMessage::ok(&message))?;
         }
         CliAction::Check { command } => {
             let store = ConfigStore::load()?;
@@ -143,10 +164,32 @@ fn parse_policy_args(args: &[String]) -> Result<CliAction> {
         Some("show") => Ok(CliAction::PolicyShow),
         Some("enable") => Ok(CliAction::PolicyEnable(true)),
         Some("disable") => Ok(CliAction::PolicyEnable(false)),
-        Some("allow") => Ok(CliAction::PolicyAllow(required_positional(args, 4)?)),
-        Some("deny") => Ok(CliAction::PolicyDeny(required_positional(args, 4)?)),
-        Some("remove-allow") => Ok(CliAction::PolicyRemoveAllow(required_positional(args, 4)?)),
-        Some("remove-deny") => Ok(CliAction::PolicyRemoveDeny(required_positional(args, 4)?)),
+        Some("presets") => Ok(CliAction::PolicyPresets),
+        Some("allow-preset") => Ok(CliAction::PolicyAllowPreset(required_positional(
+            args,
+            4,
+            "preset name",
+        )?)),
+        Some("allow") => Ok(CliAction::PolicyAllow(required_positional(
+            args,
+            4,
+            "command prefix",
+        )?)),
+        Some("deny") => Ok(CliAction::PolicyDeny(required_positional(
+            args,
+            4,
+            "command prefix",
+        )?)),
+        Some("remove-allow") => Ok(CliAction::PolicyRemoveAllow(required_positional(
+            args,
+            4,
+            "command prefix",
+        )?)),
+        Some("remove-deny") => Ok(CliAction::PolicyRemoveDeny(required_positional(
+            args,
+            4,
+            "command prefix",
+        )?)),
         Some(other) => bail!("unknown skill policy command: {other}"),
         None => bail!("missing skill policy command"),
     }
@@ -160,11 +203,11 @@ fn flag_value(args: &[String], flag: &str) -> Result<String> {
         .with_context(|| format!("missing {flag} value"))
 }
 
-fn required_positional(args: &[String], index: usize) -> Result<String> {
+fn required_positional(args: &[String], index: usize, what: &str) -> Result<String> {
     args.get(index)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .context("missing command prefix")
+        .with_context(|| format!("missing {what}"))
 }
 
 fn add_unique(values: &mut Vec<String>, value: String) {
@@ -293,6 +336,8 @@ fn help_text() -> &'static str {
   LibSSH skill policy deny <command-prefix>
   LibSSH skill policy remove-allow <command-prefix>
   LibSSH skill policy remove-deny <command-prefix>
+  LibSSH skill policy presets
+  LibSSH skill policy allow-preset <preset-name>
   LibSSH skill check --command <command>
   LibSSH skill run --session <id-or-name> --command <command>"
 }
@@ -311,6 +356,19 @@ impl<'a> StatusMessage<'a> {
     fn error(message: &'a str) -> Self {
         Self { ok: false, message }
     }
+}
+
+#[derive(Serialize)]
+struct PresetInfo {
+    name: &'static str,
+    commands: &'static [&'static str],
+}
+
+fn preset_listing() -> Vec<PresetInfo> {
+    vec![PresetInfo {
+        name: "readonly",
+        commands: crate::config::READONLY_PRESET,
+    }]
 }
 
 #[derive(Serialize)]
@@ -370,6 +428,52 @@ mod tests {
                 command: "uptime".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn parses_policy_presets_listing() {
+        let args = vec![
+            "LibSSH".to_string(),
+            "skill".to_string(),
+            "policy".to_string(),
+            "presets".to_string(),
+        ];
+        assert_eq!(parse_args(&args).unwrap(), CliAction::PolicyPresets);
+    }
+
+    #[test]
+    fn parses_policy_allow_preset_name() {
+        let args = vec![
+            "LibSSH".to_string(),
+            "skill".to_string(),
+            "policy".to_string(),
+            "allow-preset".to_string(),
+            "readonly".to_string(),
+        ];
+        assert_eq!(
+            parse_args(&args).unwrap(),
+            CliAction::PolicyAllowPreset("readonly".to_string())
+        );
+    }
+
+    #[test]
+    fn applying_preset_twice_adds_no_duplicates() {
+        let mut allowed: Vec<String> = Vec::new();
+        for _ in 0..2 {
+            for command in crate::config::READONLY_PRESET {
+                add_unique(&mut allowed, (*command).to_string());
+            }
+        }
+        assert_eq!(allowed.len(), crate::config::READONLY_PRESET.len());
+    }
+
+    #[test]
+    fn preset_listing_exposes_readonly_contents() {
+        let listing = preset_listing();
+        assert_eq!(listing.len(), 1);
+        assert_eq!(listing[0].name, "readonly");
+        assert!(listing[0].commands.contains(&"uptime"));
+        assert!(listing[0].commands.contains(&"systemctl status"));
     }
 
     #[test]
