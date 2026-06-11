@@ -42,7 +42,7 @@ LibSSH 是一个使用 Rust + Slint 编写的轻量级 SSH / SFTP 桌面客户�
 rustup toolchain install stable
 ```
 
-Linux 需要安装 Slint / winit 常用系统依赖。Ubuntu 示例：
+Linux 需要安装 Slint / winit 常用系统依赖，以及 keyring（Secret Service）所需的 D-Bus 开发库。Ubuntu 示例：
 
 ```bash
 sudo apt-get update
@@ -53,7 +53,8 @@ sudo apt-get install -y \
   libxcb1-dev \
   libxcb-render0-dev \
   libxcb-shape0-dev \
-  libxcb-xfixes0-dev
+  libxcb-xfixes0-dev \
+  libdbus-1-dev
 ```
 
 ### 构建与运行
@@ -477,8 +478,7 @@ Release workflow 支持三种触发方式：
 手动发版示例：
 
 ```bash
-git tag v0.2.7
-git push origin v0.2.7
+git tag v0.2.8 && git push origin v0.2.8
 ```
 
 或仅更新 `Cargo.toml` 的版本号后推送到 `main`，由 workflow 自动创建 tag。
