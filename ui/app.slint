@@ -11,14 +11,16 @@ import "fonts/MaterialIcons-Regular.ttf";
 
 import { Theme } from "theme.slint";
 import { TextEdit, Palette, ListView } from "std-widgets.slint";
+import { PrimaryButton, GhostButton } from "widgets.slint";
 import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
 import { Welcome, SessionInfo } from "welcome.slint";
 import { SessionDialog, SessionDraft } from "session_dialog.slint";
 import { TerminalView, TermSpan, TermMatch } from "terminal_view.slint";
 import { SftpEntry, SftpTreeNode } from "sftp_panel.slint";
+import { CommandBar, QuickCmdInfo } from "command_bar.slint";
 
-export { SessionInfo, SessionDraft, TabInfo, SftpEntry, SftpTreeNode, Theme }
+export { SessionInfo, SessionDraft, TabInfo, SftpEntry, SftpTreeNode, Theme, QuickCmdInfo }
 
 // --- TerminalState ---------------------------------------------------------
 // Per-terminal view-model exposed to Rust. A TabInfo has the metadata; the
@@ -198,6 +200,19 @@ export component AppWindow inherits Window {
 
     // Reconnect a disconnected terminal tab in place (manual button or auto-retry).
     callback reconnect-tab(string /* tab-id */);
+
+    // --- Bottom command bar (history suggestions + quick commands) ---------
+    in property <[string]> command-suggestions;
+    in property <[QuickCmdInfo]> quick-commands;
+    callback command-bar-send(string /* tab-id */, string /* text */);
+    callback command-bar-input(string /* text */);
+    callback quick-cmd-manage(string /* id, "" = new */);  // 预填并打开管理对话框
+    callback quick-cmd-submit(string /* id */, string /* name */, string /* command */);
+    callback quick-cmd-delete(string /* id */);
+    in-out property <bool> qc-dialog-open: false;
+    in-out property <string> qc-dialog-id;
+    in-out property <string> qc-dialog-name;
+    in-out property <string> qc-dialog-command;
     // Raw keystroke forwarding: Rust converts key+modifiers to PTY bytes.
     callback send-key(string /* tab-id */, string /* key */, bool /* ctrl */, bool /* alt */, bool /* shift */);
     // Notifies Rust of a PTY resize (pixel dimensions; Rust converts to cols/rows).
@@ -350,6 +365,16 @@ export component AppWindow inherits Window {
                     select-end() => { root.term-select-end(term.id); }
                     select-autoscroll(dir) => { root.term-select-autoscroll(term.id, dir); }
                 }
+            }
+
+            // 底部本地命令栏：仅终端标签显示；发送目标始终是当前激活标签。
+            if root.active-tab-id != "welcome" : CommandBar {
+                suggestions: root.command-suggestions;
+                quick-commands: root.quick-commands;
+                send(text) => { root.command-bar-send(root.active-tab-id, text); }
+                input-changed(t) => { root.command-bar-input(t); }
+                open-quick-manage(id) => { root.quick-cmd-manage(id); }
+                quick-delete(id) => { root.quick-cmd-delete(id); }
             }
         }
     }
@@ -794,6 +819,108 @@ export component AppWindow inherits Window {
                     font-size: Theme.fs-sm;
                     horizontal-alignment: center;
                     vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    // --- Quick command editor dialog (new / edit) --------------------------
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        visible: root.qc-dialog-open;
+        background: #00000080;
+        TouchArea { clicked => { root.qc-dialog-open = false; } }
+
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(420px, parent.width - 48px);
+            height: 208px;
+            background: Theme.bg-panel;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #00000070;
+
+            TouchArea {}    // swallow clicks
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+
+                Text {
+                    text: root.qc-dialog-id == "" ? @tr("New quick command") : @tr("Edit quick command");
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-lg;
+                    font-weight: 700;
+                }
+
+                Rectangle {
+                    height: 30px;
+                    background: Theme.bg-root;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: qc-name-input.has-focus ? Theme.accent : Theme.border-subtle;
+                    qc-name-input := TextInput {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: parent.height;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-sm;
+                        vertical-alignment: center;
+                        single-line: true;
+                        text: root.qc-dialog-name;
+                        edited => { root.qc-dialog-name = self.text; }
+                    }
+                }
+                Text {
+                    text: @tr("Name (optional)");
+                    color: Theme.text-muted;
+                    font-size: Theme.fs-xs;
+                }
+
+                Rectangle {
+                    height: 30px;
+                    background: Theme.bg-root;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: qc-cmd-input.has-focus ? Theme.accent : Theme.border-subtle;
+                    qc-cmd-input := TextInput {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: parent.height;
+                        color: Theme.text-primary;
+                        font-family: Theme.font-mono;
+                        font-size: Theme.fs-sm;
+                        vertical-alignment: center;
+                        single-line: true;
+                        text: root.qc-dialog-command;
+                        edited => { root.qc-dialog-command = self.text; }
+                    }
+                }
+                Text {
+                    text: @tr("Command");
+                    color: Theme.text-muted;
+                    font-size: Theme.fs-xs;
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    GhostButton {
+                        text: @tr("Cancel");
+                        clicked => { root.qc-dialog-open = false; }
+                    }
+                    PrimaryButton {
+                        text: @tr("Save");
+                        disabled: root.qc-dialog-command == "";
+                        clicked => {
+                            root.quick-cmd-submit(root.qc-dialog-id, root.qc-dialog-name, root.qc-dialog-command);
+                            root.qc-dialog-open = false;
+                        }
+                    }
                 }
             }
         }

@@ -281,3 +281,21 @@ msgstr "输入名称"
 
 msgid "Reconnect"
 msgstr "重连"
+
+msgid "No quick commands yet"
+msgstr "还没有快捷命令"
+
+msgid "+ Add quick command"
+msgstr "+ 添加快捷命令"
+
+msgid "New quick command"
+msgstr "新建快捷命令"
+
+msgid "Edit quick command"
+msgstr "编辑快捷命令"
+
+msgid "Name (optional)"
+msgstr "名称（可选）"
+
+msgid "Command"
+msgstr "命令"

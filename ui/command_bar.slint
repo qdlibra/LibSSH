@@ -1,0 +1,285 @@
+import { Theme } from "theme.slint";
+
+export struct QuickCmdInfo {
+    id: string,
+    name: string,
+    command: string,
+}
+
+// 底部本地命令栏：FinalShell 式独立输入框。所有补全键位（↑↓/Tab/Esc）
+// 只作用于本输入框，不与远端 shell 抢键；Enter 把整行交给 Rust 发送
+// （Rust 端先发 Ctrl+U 清掉远端半截输入再注入命令）。
+export component CommandBar inherits Rectangle {
+    in property <[string]> suggestions;
+    in property <[QuickCmdInfo]> quick-commands;
+    callback send(string);
+    callback input-changed(string);
+    callback open-quick-manage(string /* id, "" = new */);
+    callback quick-delete(string);
+
+    property <int> selected: -1;
+    property <bool> dismissed: false;
+    in-out property <bool> quick-open: false;
+    property <bool> suggestions-visible: !root.dismissed
+        && cmd-input.text != "" && root.suggestions.length > 0;
+
+    height: 34px;
+    background: Theme.bg-panel-alt;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 6px;
+
+        Text {
+            text: ">_";
+            color: Theme.text-muted;
+            font-family: Theme.font-mono;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            background: Theme.bg-root;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: cmd-input.has-focus ? Theme.accent : Theme.border-subtle;
+            horizontal-stretch: 1;
+
+            cmd-input := TextInput {
+                x: 8px;
+                width: parent.width - 16px;
+                height: parent.height;
+                color: Theme.text-primary;
+                font-family: Theme.font-mono;
+                font-size: Theme.fs-sm;
+                vertical-alignment: center;
+                single-line: true;
+
+                edited => {
+                    root.dismissed = false;
+                    root.selected = -1;
+                    root.input-changed(self.text);
+                }
+
+                key-pressed(e) => {
+                    if (e.text == Key.Return || e.text == "\u{000D}") {
+                        if (self.text != "") {
+                            root.send(self.text);
+                            self.text = "";
+                            root.input-changed("");
+                            root.selected = -1;
+                        }
+                        accept
+                    } else if (e.text == Key.UpArrow && root.suggestions-visible) {
+                        root.selected = root.selected <= 0
+                            ? root.suggestions.length - 1
+                            : root.selected - 1;
+                        accept
+                    } else if (e.text == Key.DownArrow && root.suggestions-visible) {
+                        root.selected = root.selected >= root.suggestions.length - 1
+                            ? 0
+                            : root.selected + 1;
+                        accept
+                    } else if (e.text == Key.Tab && root.suggestions-visible) {
+                        // Tab 接受当前选中（未选时取第一条）建议
+                        self.text = root.suggestions[max(0, root.selected)];
+                        self.set-selection-offsets(self.text.character-count, self.text.character-count);
+                        root.input-changed(self.text);
+                        accept
+                    } else if (e.text == Key.Escape) {
+                        root.dismissed = true;
+                        root.quick-open = false;
+                        accept
+                    } else {
+                        reject
+                    }
+                }
+            }
+        }
+
+        // 快捷命令开关（星形）
+        Rectangle {
+            width: 26px;
+            border-radius: Theme.radius-sm;
+            background: star-ta.has-hover || root.quick-open ? Theme.bg-hover : transparent;
+            star-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.quick-open = !root.quick-open; }
+            }
+            Text {
+                text: "\u{E838}";   // Material Icons "star"
+                font-family: "Material Icons";
+                color: root.quick-open ? Theme.accent : Theme.text-secondary;
+                font-size: Theme.fs-md;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // --- 历史建议浮层（命令栏上方，悬于终端之上） -----------------------
+    if root.suggestions-visible : Rectangle {
+        x: 22px;
+        width: min(parent.width - 60px, 560px);
+        height: root.suggestions.length * 24px + 8px;
+        y: -self.height - 2px;
+        background: Theme.bg-panel;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: #00000060;
+
+        VerticalLayout {
+            padding: 4px;
+            for s[i] in root.suggestions : Rectangle {
+                height: 24px;
+                border-radius: 3px;
+                background: i == root.selected || sug-ta.has-hover
+                    ? Theme.bg-active
+                    : transparent;
+                sug-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        cmd-input.text = s;
+                        cmd-input.set-selection-offsets(s.character-count, s.character-count);
+                        root.input-changed(s);
+                        cmd-input.focus();
+                    }
+                }
+                Text {
+                    x: 8px;
+                    width: parent.width - 16px;
+                    text: s;
+                    color: Theme.text-primary;
+                    font-family: Theme.font-mono;
+                    font-size: Theme.fs-sm;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    // --- 快捷命令浮层（命令栏上方，星形开启） ---------------------------
+    if root.quick-open : Rectangle {
+        x: parent.width - self.width - 8px;
+        width: min(parent.width - 60px, 420px);
+        height: min(root.quick-commands.length, 10) * 28px
+            + (root.quick-commands.length == 0 ? 24px : 0px) + 34px;
+        y: -self.height - 2px;
+        background: Theme.bg-panel;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: #00000060;
+
+        VerticalLayout {
+            padding: 4px;
+            spacing: 1px;
+
+            if root.quick-commands.length == 0 : Rectangle {
+                height: 24px;
+                Text {
+                    text: @tr("No quick commands yet");
+                    color: Theme.text-muted;
+                    font-size: Theme.fs-xs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            for qc[i] in root.quick-commands : Rectangle {
+                height: 28px;
+                border-radius: 3px;
+                background: qc-ta.has-hover ? Theme.bg-active : transparent;
+                qc-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.send(qc.command);
+                        root.quick-open = false;
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 4px;
+                    spacing: 6px;
+                    Text {
+                        text: qc.name;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-sm;
+                        width: 30%;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: qc.command;
+                        color: Theme.text-muted;
+                        font-family: Theme.font-mono;
+                        font-size: Theme.fs-xs;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 22px;
+                        edit-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.open-quick-manage(qc.id);
+                                root.quick-open = false;
+                            }
+                        }
+                        Text {
+                            text: "\u{E3C9}";   // Material Icons "edit"
+                            font-family: "Material Icons";
+                            color: edit-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                            font-size: Theme.fs-sm;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        width: 22px;
+                        del-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.quick-delete(qc.id); }
+                        }
+                        Text {
+                            text: "\u{E872}";   // Material Icons "delete"
+                            font-family: "Material Icons";
+                            color: del-ta.has-hover ? Theme.danger : Theme.text-muted;
+                            font-size: Theme.fs-sm;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 26px;
+                border-radius: 3px;
+                background: add-ta.has-hover ? Theme.bg-hover : transparent;
+                add-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.open-quick-manage("");
+                        root.quick-open = false;
+                    }
+                }
+                Text {
+                    text: @tr("+ Add quick command");
+                    color: Theme.accent;
+                    font-size: Theme.fs-xs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

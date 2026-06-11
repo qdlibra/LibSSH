@@ -281,3 +281,21 @@ msgstr "Enter name"
 
 msgid "Reconnect"
 msgstr "Reconnect"
+
+msgid "No quick commands yet"
+msgstr "No quick commands yet"
+
+msgid "+ Add quick command"
+msgstr "+ Add quick command"
+
+msgid "New quick command"
+msgstr "New quick command"
+
+msgid "Edit quick command"
+msgstr "Edit quick command"
+
+msgid "Name (optional)"
+msgstr "Name (optional)"
+
+msgid "Command"
+msgstr "Command"

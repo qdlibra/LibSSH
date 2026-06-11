@@ -205,6 +205,8 @@ fn initialise_models(window: &AppWindow, store: &ConfigStore) -> AppModels {
     window.set_terminals(ModelRc::from(terminals_model.clone()));
     window.set_transfers(empty_model::<TransferInfo>());
 
+    window.set_command_suggestions(empty_model::<SharedString>());
+    window.set_quick_commands(empty_model::<QuickCmdInfo>());
     window.set_net_top_history(ModelRc::from(Rc::new(VecModel::from(vec![0.0; 60]))));
     window.set_net_bot_history(ModelRc::from(Rc::new(VecModel::from(vec![0.0; 60]))));
     window.set_net_ifaces(empty_model::<SharedString>());
@@ -962,6 +964,42 @@ fn wire_callbacks(
                 initial_rows,
             );
         });
+    });
+
+    // 底部命令栏：输入变化 → 历史前缀建议；回车/点建议/点快捷命令 → 发送。
+    let bar_history = cmd_history.clone();
+    let weak = window.as_weak();
+    window.on_command_bar_input(move |text: SharedString| {
+        let suggestions: Vec<SharedString> = bar_history
+            .borrow()
+            .suggest(text.as_str(), 8)
+            .into_iter()
+            .map(SharedString::from)
+            .collect();
+        if let Some(w) = weak.upgrade() {
+            w.set_command_suggestions(ModelRc::from(Rc::new(VecModel::from(suggestions))));
+        }
+    });
+
+    let bar_handles = handles.clone();
+    let bar_history = cmd_history.clone();
+    let bar_trackers = input_trackers.clone();
+    window.on_command_bar_send(move |tab_id: SharedString, text: SharedString| {
+        let cmd = text.trim().to_string();
+        if cmd.is_empty() {
+            return;
+        }
+        if let Some(handle) = bar_handles.borrow().get(tab_id.as_str()) {
+            // 0x15 = Ctrl+U：先清掉远端行上可能存在的半截输入，再注入完整命令。
+            let mut bytes = vec![0x15];
+            bytes.extend_from_slice(cmd.as_bytes());
+            bytes.push(b'\n');
+            handle.send_raw(bytes);
+            bar_history.borrow_mut().add(&cmd);
+            if let Some(t) = bar_trackers.lock().unwrap().get_mut(tab_id.as_str()) {
+                t.reset();
+            }
+        }
     });
 
     // 就地重连：手动按钮与自动重连定时器共用入口。终端缓冲 / 回看历史 /
