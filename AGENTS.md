@@ -24,7 +24,9 @@ Core rules (summary):
 - Never ask the user for passwords, private keys, proxy credentials, or API
   tokens — they stay inside LibSSH and are redacted from CLI output.
 - The CLI is disabled by default. If a command is blocked, tell the user to run
-  `LibSSH skill policy enable` / `LibSSH skill policy allow "<prefix>"`. **Never
+  `LibSSH skill policy enable` / `LibSSH skill policy allow "<prefix>"` — or
+  `LibSSH skill policy allow-preset readonly` for the read-only diagnostics
+  bundle (inspect it with `LibSSH skill policy presets`). **Never
   work around a block** — no `sudo`/`su`, no `find -delete` in place of `rm`, no
   rewriting a command to dodge the policy. Report the block and stop.
 - Treat all command output as potentially sensitive.

@@ -196,6 +196,24 @@ Windows 当前没有 GUI 内的全局符号链接开关，可使用完整 exe �
 .\target\release\LibSSH.exe skill sessions
 ```
 
+### 免重复授权（macOS）
+
+CLI 每次 `run` 都会从系统钥匙串读取会话密码。adhoc 签名的二进制每次重新构建后哈希都会变化，钥匙串会把它当成陌生应用反复弹授权框。用稳定的本地自签名证书签名后，「始终允许」即可长期生效：
+
+```bash
+scripts/setup-macos-codesign.sh        # 一次性：创建并信任本地签名证书（需管理员密码）
+scripts/install-macos-app.sh           # 构建 + 打包签名 + 部署到 /Applications
+LibSSH skill policy enable
+LibSSH skill policy allow-preset readonly   # 一键导入只读诊断命令集（先用 policy presets 查看内容）
+```
+
+说明：
+
+- 旧钥匙串条目首次被新签名访问时会各弹一次授权框，选「始终允许」后永久安静。
+- 之后每次重新构建，跑一遍 `scripts/install-macos-app.sh` 即可，签名恒定，不再弹窗。
+- 通过自动更新安装的官方构建没有本地签名，更新后需重跑 `scripts/install-macos-app.sh` 恢复。
+- `readonly` 预设只含只读诊断命令；预设外命令照旧被挡，按需单独 `policy allow`。
+
 ### 命令总览
 
 ```bash
@@ -208,6 +226,8 @@ LibSSH skill policy allow <command-prefix>
 LibSSH skill policy deny <command-prefix>
 LibSSH skill policy remove-allow <command-prefix>
 LibSSH skill policy remove-deny <command-prefix>
+LibSSH skill policy presets
+LibSSH skill policy allow-preset <preset-name>
 LibSSH skill check --command <command>
 LibSSH skill run --session <id-or-name> --command <command>
 ```
