@@ -3,6 +3,7 @@
 mod app;
 mod cli;
 mod config;
+mod history;
 mod i18n;
 mod proxy;
 mod sftp;
