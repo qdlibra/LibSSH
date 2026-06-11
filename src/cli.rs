@@ -312,12 +312,13 @@ Never ask the user for passwords, private keys, proxy credentials, or API tokens
 | Show current policy | `LibSSH skill policy show` |
 | Check a command | `LibSSH skill check --command "<cmd>"` |
 | Run a command | `LibSSH skill run --session "<id-or-name>" --command "<cmd>"` |
+| Import the read-only diagnostics preset | `LibSSH skill policy allow-preset readonly` |
 
 ## When a command is blocked
 
 The CLI is **disabled by default** and denies every command until the user opts in. If `check`/`run` reports disabled, not-allowed, or blocked:
 
-- Tell the user what to run, and let them run it: `LibSSH skill policy enable`, then `LibSSH skill policy allow "<command-prefix>"`.
+- Tell the user what to run, and let them run it: `LibSSH skill policy enable`, then `LibSSH skill policy allow "<command-prefix>"`. For routine read-only diagnostics, suggest the one-shot preset instead of piecemeal rules: `LibSSH skill policy allow-preset readonly` (the user can inspect it first with `LibSSH skill policy presets`).
 - **Never work around a block.** If `rm` is blocked, do not substitute `find -delete`, `truncate`, `: >`, or any equivalent. Do not escalate with `sudo`/`su` or rewrite a command to dodge the policy. Report the block and stop.
 - Destructive and secret-reading prefixes (`rm`, `dd`, `mkfs`, `shutdown`, `reboot`, `passwd`, `sudo`, `su`, `env`, `printenv`, secret managers, `kubectl ... secret`) are always blocked by design. Surface them for the user to handle manually in the LibSSH GUI.
 
@@ -487,6 +488,13 @@ mod tests {
         assert!(!redacted.contains("abc123"));
         assert!(!redacted.contains("prod.pem"));
         assert!(redacted.contains("normal line"));
+    }
+
+    #[test]
+    fn skill_markdown_mentions_readonly_preset() {
+        let md = generated_skill_markdown();
+        assert!(md.contains("policy allow-preset readonly"));
+        assert!(md.contains("policy presets"));
     }
 
     #[test]
