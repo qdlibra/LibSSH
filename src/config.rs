@@ -347,7 +347,6 @@ impl ConfigStore {
         &self.cache.sessions
     }
 
-    #[allow(dead_code)]
     pub fn sessions_mut(&mut self) -> &mut Vec<Session> {
         &mut self.cache.sessions
     }

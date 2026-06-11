@@ -6,6 +6,7 @@ mod config;
 mod history;
 mod i18n;
 mod proxy;
+mod secrets;
 mod sftp;
 mod ssh;
 mod ssh_config;

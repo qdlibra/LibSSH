@@ -85,6 +85,23 @@ pub fn run(log_buffer: crate::logbuf::LogBuffer) -> anyhow::Result<()> {
     let store = Rc::new(RefCell::new(ConfigStore::load()?));
     crate::i18n::set_language(store.borrow().language());
 
+    // 启动迁移：把 sessions.json 里的明文密码搬进系统凭据库（幂等，
+    // keyring 不可用时首败即停、明文保留，下次启动重试）。
+    {
+        let mut s = store.borrow_mut();
+        let moved =
+            crate::secrets::migrate_plaintext_passwords(s.sessions_mut(), |id, pwd| {
+                crate::secrets::store_password(id, pwd)
+            });
+        if moved > 0 {
+            if let Err(e) = s.save() {
+                tracing::warn!("save after password migration failed: {e:#}");
+            } else {
+                tracing::info!("migrated {moved} session password(s) into the OS keyring");
+            }
+        }
+    }
+
     let window = AppWindow::new()?;
     crate::i18n::apply_to_slint();
     window.set_lang_en(crate::i18n::is_en());
@@ -801,6 +818,7 @@ fn wire_callbacks(
                 tracing::warn!("failed to save config: {err:#}");
             }
         }
+        crate::secrets::delete_password(&id.to_string());
         sync_sessions_to_model(&remove_store.borrow(), &remove_sessions);
         if let Some(w) = weak.upgrade() {
             let _ = w.get_sessions();
@@ -822,7 +840,7 @@ fn wire_callbacks(
         } else {
             Secret::new(draft.password.to_string())
         };
-        let new_session = Session {
+        let mut new_session = Session {
             id: if id.is_empty() {
                 uuid::Uuid::new_v4().to_string()
             } else {
@@ -846,6 +864,15 @@ fn wire_callbacks(
             proxy: String::new(),
             last_used: None,
         };
+        // 新输入的密码优先进系统凭据库；成功则 json 落空串，失败保持明文
+        // （与旧版行为一致）。未改密码（draft 为空）时沿用上面取出的旧值，
+        // 不碰 keyring。
+        if !draft.password.is_empty()
+            && crate::secrets::store_password(&new_session.id, new_session.password.as_str())
+                .is_ok()
+        {
+            new_session.password = Secret::default();
+        }
         {
             let mut s = submit_store.borrow_mut();
             s.upsert(new_session);
@@ -897,10 +924,14 @@ fn wire_callbacks(
         let connect_last_size = connect_last_size.clone();
 
         Timer::single_shot(std::time::Duration::from_millis(1), move || {
-            let session = match connect_store.borrow().get(&id).cloned() {
+            let mut session = match connect_store.borrow().get(&id).cloned() {
                 Some(s) => s,
                 None => return,
             };
+            // 密码在 json 中为空时回查系统凭据库；之后 spawn_session /
+            // spawn_sftp / 重连映射拿到的都是已解析副本。
+            crate::secrets::resolve_session_password(&mut session);
+            let session = session;
             let tab_id = format!("term-{}", uuid::Uuid::new_v4());
             connect_tab_sessions
                 .borrow_mut()

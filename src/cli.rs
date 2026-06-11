@@ -87,9 +87,13 @@ pub fn run_args(args: &[String]) -> Result<()> {
                 print_json(&CommandDecision::denied(&command, &reason))?;
                 bail!(reason);
             }
-            let session = find_session(store.sessions(), &session)
+            let mut session = find_session(store.sessions(), &session)
                 .with_context(|| format!("session not found: {session}"))?
                 .clone();
+            // json 里密码为空（已迁入系统凭据库）时回查 keyring，
+            // 且在 redaction 取值之前完成，保证真实密码也被打码。
+            crate::secrets::resolve_session_password(&mut session);
+            let session = session;
             let secrets = secret_values_for_session(&session);
             let runtime = tokio::runtime::Runtime::new().context("create CLI runtime")?;
             match runtime.block_on(crate::ssh::run_exec(session, &command)) {

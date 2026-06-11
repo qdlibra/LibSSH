@@ -37,6 +37,10 @@ arboard = "3"
 # Zeroes password buffers on drop so plaintext credentials don't linger in
 # freed heap memory (core dumps / debuggers / /proc/pid/mem).
 zeroize = "1"
+# 系统凭据库存会话密码（macOS Keychain / Windows Credential Manager /
+# Linux Secret Service）。写优先 keyring、失败回退 sessions.json 明文；
+# 读时密码为空才回查 keyring（见 src/secrets.rs 的「无标志位」设计）。
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 # SOCKS5 proxy tunnelling for SSH/SFTP in network-restricted environments.
 # (HTTP CONNECT proxies are handled in src/proxy.rs without an extra crate.)
 tokio-socks = "0.5"
