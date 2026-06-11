@@ -106,6 +106,11 @@ pub fn run(log_buffer: crate::logbuf::LogBuffer) -> anyhow::Result<()> {
     // tab → 连接时的 Session 副本：断线重连用同一配置原地重建连接。
     let tab_sessions: Rc<RefCell<HashMap<String, Session>>> =
         Rc::new(RefCell::new(HashMap::new()));
+    // 全局命令历史 + 每标签的输入行跟踪（粘贴在剪贴板线程 feed，故用 Arc<Mutex>）。
+    let cmd_history: Rc<RefCell<crate::history::CommandHistory>> =
+        Rc::new(RefCell::new(crate::history::CommandHistory::load_default()));
+    let input_trackers: Arc<Mutex<HashMap<String, crate::history::InputTracker>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let sftp_handles: SftpHandles = Arc::new(Mutex::new(HashMap::new()));
     let sftp_manual_nav: SftpManualNav = Arc::new(Mutex::new(HashMap::new()));
     let bufs: TermBuffers = Arc::new(Mutex::new(HashMap::new()));
@@ -123,6 +128,8 @@ pub fn run(log_buffer: crate::logbuf::LogBuffer) -> anyhow::Result<()> {
         runtime,
         handles,
         tab_sessions,
+        cmd_history,
+        input_trackers,
         sftp_handles.clone(),
         sftp_manual_nav.clone(),
         bufs,
@@ -570,6 +577,8 @@ fn wire_callbacks(
     runtime: Arc<Runtime>,
     handles: Rc<RefCell<HashMap<String, SessionHandle>>>,
     tab_sessions: Rc<RefCell<HashMap<String, Session>>>,
+    cmd_history: Rc<RefCell<crate::history::CommandHistory>>,
+    input_trackers: Arc<Mutex<HashMap<String, crate::history::InputTracker>>>,
     sftp_handles: SftpHandles,
     sftp_manual_nav: SftpManualNav,
     bufs: TermBuffers,
@@ -858,6 +867,7 @@ fn wire_callbacks(
     let connect_terminals = terminals_model.clone();
     let connect_ctx = io_ctx.clone();
     let connect_tab_sessions = tab_sessions.clone();
+    let connect_trackers = input_trackers.clone();
     let connect_last_size = last_term_size.clone();
     window.on_connect_session(move |id: SharedString| {
         let id = id.to_string();
@@ -867,6 +877,7 @@ fn wire_callbacks(
         let connect_terminals = connect_terminals.clone();
         let connect_ctx = connect_ctx.clone();
         let connect_tab_sessions = connect_tab_sessions.clone();
+        let connect_trackers = connect_trackers.clone();
         let connect_last_size = connect_last_size.clone();
 
         Timer::single_shot(std::time::Duration::from_millis(1), move || {
@@ -878,6 +889,10 @@ fn wire_callbacks(
             connect_tab_sessions
                 .borrow_mut()
                 .insert(tab_id.clone(), session.clone());
+            connect_trackers
+                .lock()
+                .unwrap()
+                .insert(tab_id.clone(), Default::default());
             connect_ctx.tab_statuses.lock().unwrap().insert(
                 tab_id.clone(),
                 TabStatus {
@@ -991,6 +1006,7 @@ fn wire_callbacks(
     let close_tabs = tabs_model.clone();
     let close_terminals = terminals_model.clone();
     let close_tab_sessions = tab_sessions.clone();
+    let close_trackers = input_trackers.clone();
     let close_handles = handles.clone();
     let close_sftp_handles = sftp_handles.clone();
     let close_sftp_manual_nav = sftp_manual_nav.clone();
@@ -1007,6 +1023,7 @@ fn wire_callbacks(
         // 标记为"用户主动关闭"，让随后异步到达的 Closed 事件不要误弹"连接失败"框。
         close_user_closing.lock().unwrap().insert(id.clone());
         close_tab_sessions.borrow_mut().remove(&id);
+        close_trackers.lock().unwrap().remove(&id);
         if let Some(handle) = close_handles.borrow_mut().remove(&id) {
             handle.close();
         }
@@ -1110,10 +1127,20 @@ fn wire_callbacks(
 
     let send_handles = handles.clone();
     let send_bufs = bufs.clone();
+    let send_history = cmd_history.clone();
+    let send_trackers = input_trackers.clone();
     let last_shift_time: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
     window.on_send_key(
         move |tab_id: SharedString, key: SharedString, ctrl, alt, shift| {
             let key = key.to_string();
+            // 输入行跟踪：干净提交的一行进入全局命令历史。
+            if !key.is_empty() {
+                if let Some(tracker) = send_trackers.lock().unwrap().get_mut(tab_id.as_str()) {
+                    if let Some(line) = tracker.feed_key(&key, ctrl, alt) {
+                        send_history.borrow_mut().add(&line);
+                    }
+                }
+            }
             let app_cursor = {
                 let mut map = send_bufs.lock().unwrap();
                 match map.get_mut(tab_id.as_str()) {
@@ -1260,6 +1287,7 @@ fn wire_callbacks(
     });
 
     let paste_handles = handles.clone();
+    let paste_trackers = input_trackers.clone();
     window.on_paste_from_clipboard(move |tab_id: SharedString| {
         let sender = paste_handles
             .borrow()
@@ -1268,9 +1296,14 @@ fn wire_callbacks(
         let Some(sender) = sender else {
             return;
         };
+        let trackers = paste_trackers.clone();
+        let tab_id = tab_id.to_string();
         std::thread::spawn(move || {
             match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
                 Ok(text) => {
+                    if let Some(t) = trackers.lock().unwrap().get_mut(&tab_id) {
+                        t.feed_paste(&text);
+                    }
                     let _ = sender.send(SessionCommand::RawInput(text.into_bytes()));
                 }
                 Err(err) => tracing::warn!("paste_from_clipboard failed: {err}"),
