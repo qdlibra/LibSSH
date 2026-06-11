@@ -92,11 +92,13 @@ dist/LibSSH-macos-arm64.dmg
 dist/LibSSH-macos-x86_64.dmg
 ```
 
-如果打开未签名构建时被系统拦截，可清除隔离标记：
+如果从网页下载的 dmg 打开时提示「LibSSH 已损坏，无法打开」——这是 Gatekeeper 对未公证应用的拦截，不是文件真的损坏。先把 app 拖入「应用程序」，再清除隔离标记后重新打开：
 
 ```bash
-xattr -dr com.apple.quarantine LibSSH.app
+xattr -dr com.apple.quarantine /Applications/LibSSH.app
 ```
+
+本地构建并用 `scripts/install-macos-app.sh` 部署不会遇到此问题（本地文件没有隔离标记）。
 
 ### Linux
 

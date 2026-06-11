@@ -227,3 +227,20 @@ jobs:
           else
             gh release create "$TAG" "${files[@]}" --repo "$REPO" --generate-notes --title "$TAG"
           fi
+          # macOS 资产是 adhoc 签名（未公证），浏览器下载带 quarantine 后
+          # Gatekeeper 会报「已损坏，无法打开」。把解决步骤固定放进 release
+          # 说明开头（幂等：已有提示则跳过，避免覆盖人工编辑）。
+          if ! gh release view "$TAG" --repo "$REPO" --json body -q .body | grep -q "macOS 安装提示"; then
+            {
+              echo "## macOS 安装提示"
+              echo
+              echo "dmg 未经 Apple 公证，首次打开可能提示「LibSSH 已损坏，无法打开」。这是 Gatekeeper 对未公证应用的拦截，不是文件损坏。解决："
+              echo
+              echo '1. 把 `LibSSH.app` 拖入「应用程序」文件夹；'
+              echo '2. 终端执行 `xattr -dr com.apple.quarantine /Applications/LibSSH.app`；'
+              echo "3. 重新打开。"
+              echo
+              gh release view "$TAG" --repo "$REPO" --json body -q .body
+            } > final-notes.md
+            gh release edit "$TAG" --repo "$REPO" --notes-file final-notes.md
+          fi
