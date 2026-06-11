@@ -65,6 +65,14 @@ cat > "$CONTENTS/Info.plist" <<EOF
 </plist>
 EOF
 
+# 有本地签名证书就签 .app（钥匙串信任跨构建恒定）；没有（如 CI）保持 adhoc。
+if [[ "$(uname -s)" == "Darwin" ]] \
+    && security find-certificate -c "LibSSH Dev Signing" >/dev/null 2>&1; then
+    "$ROOT/scripts/codesign-macos.sh" "$APP_DIR"
+else
+    echo "Signing certificate 'LibSSH Dev Signing' not found; packaging with adhoc signature." >&2
+fi
+
 rm -f "$DMG"
 rm -rf "$DMG_ROOT"
 mkdir -p "$DMG_ROOT"
