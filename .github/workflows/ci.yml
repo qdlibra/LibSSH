@@ -62,3 +62,6 @@ jobs:
         # If any test instantiates the Slint UI it may need a display; in that
         # case prefix with `xvfb-run -a` or set `SLINT_BACKEND: testing`.
         run: cargo test --locked
+
+      - name: Shell script syntax check
+        run: bash -n scripts/*.sh
