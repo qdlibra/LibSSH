@@ -178,6 +178,8 @@ export component AppWindow inherits Window {
     in-out property <string> dialog-auth: "password";
     in-out property <string> dialog-password;
     in-out property <string> dialog-key-path;
+    in-out property <string> dialog-test-status: "idle";  // "idle" | "testing" | "ok" | "fail"
+    in-out property <string> dialog-test-message;
 
     // --- Callbacks up to Rust ---------------------------------------------
     callback new-session-clicked();
@@ -190,6 +192,7 @@ export component AppWindow inherits Window {
     callback session-dialog-submit(SessionDraft);
     callback session-dialog-cancel();
     callback session-dialog-pick-key();
+    callback session-dialog-test(SessionDraft);  // probe connectivity with the draft
 
     callback tab-selected(string);
     callback tab-closed(string);
@@ -1326,9 +1329,12 @@ export component AppWindow inherits Window {
         draft-auth <=> root.dialog-auth;
         draft-password <=> root.dialog-password;
         draft-key-path <=> root.dialog-key-path;
+        test-status <=> root.dialog-test-status;
+        test-message <=> root.dialog-test-message;
         submit(draft) => { root.session-dialog-submit(draft); }
         cancel => { root.session-dialog-cancel(); }
         pick-key-file => { root.session-dialog-pick-key(); }
+        test-connection(draft) => { root.session-dialog-test(draft); }
     }
 
     // --- In-app text editor overlay (满窗，仿 About 对话框) ----------------

@@ -26,10 +26,14 @@ export component SessionDialog inherits Rectangle {
     in-out property <string> draft-auth: "password";
     in-out property <string> draft-password;
     in-out property <string> draft-key-path;
+    // Connectivity test state, driven from Rust: "idle" | "testing" | "ok" | "fail"
+    in-out property <string> test-status: "idle";
+    in-out property <string> test-message;
 
     callback submit(SessionDraft);
     callback cancel();
     callback pick-key-file();   // open a native file picker for the private key
+    callback test-connection(SessionDraft);  // probe the server with the current draft
 
     visible: is-open;
     background: #000000aa;
@@ -42,7 +46,7 @@ export component SessionDialog inherits Rectangle {
 
     Rectangle {
         width: 420px;
-        height: 460px;
+        height: 500px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: Theme.bg-panel;
@@ -217,9 +221,38 @@ export component SessionDialog inherits Rectangle {
 
             Rectangle { vertical-stretch: 1; }
 
+            // Connectivity test result (hidden until the first probe)
+            if root.test-status != "idle" : Text {
+                text: root.test-status == "ok" ? "✓ " + root.test-message
+                    : root.test-status == "fail" ? "✗ " + root.test-message
+                    : root.test-message;
+                color: root.test-status == "ok" ? Theme.success
+                    : root.test-status == "fail" ? Theme.danger
+                    : Theme.text-secondary;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+
             HorizontalLayout {
-                alignment: end;
                 spacing: 8px;
+                GhostButton {
+                    text: root.test-status == "testing" ? @tr("Testing…") : @tr("Test connection");
+                    clicked => {
+                        if (root.test-status != "testing") {
+                            root.test-connection({
+                                id: root.draft-id,
+                                name: root.draft-name,
+                                host: root.draft-host,
+                                port: root.draft-port.to-float(),
+                                user: root.draft-user,
+                                auth: root.draft-auth,
+                                password: root.draft-password,
+                                private-key-path: root.draft-key-path,
+                            });
+                        }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
                 GhostButton {
                     text: @tr("Cancel");
                     clicked => { root.cancel(); }

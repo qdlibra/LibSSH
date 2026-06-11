@@ -249,6 +249,63 @@ pub(crate) fn load_private_key_for_auth(raw: &str) -> Result<PrivateKeyWithHashA
         .context("invalid private key / hash algorithm combination")
 }
 
+/// 按会话配置测试连通性：TCP/代理直连 + SSH 握手 + 身份认证，成功即断开。
+/// 整体 20 秒超时（覆盖 DNS、TCP、握手、认证任何一步卡住的情况）。
+pub async fn test_connection(session: Session) -> Result<()> {
+    let attempt = async move {
+        let config = Arc::new(client::Config::default());
+        let handler = ClientHandler {};
+        let addr = format!("{}:{}", session.host, session.port);
+        let mut handle = match crate::proxy::resolve(&session.proxy) {
+            Some(proxy) => {
+                let stream = crate::proxy::connect(&proxy, &session.host, session.port)
+                    .await
+                    .with_context(|| format!("proxy connect to {} failed", addr))?;
+                client::connect_stream(config, stream, handler)
+                    .await
+                    .with_context(|| format!("connect {} failed", addr))?
+            }
+            None => client::connect(config, addr.as_str(), handler)
+                .await
+                .with_context(|| format!("connect {} failed", addr))?,
+        };
+
+        let authed = match session.auth {
+            AuthMethod::Password => handle
+                .authenticate_password(&session.user, session.password.as_str())
+                .await
+                .context("password auth failed")?,
+            AuthMethod::Key => {
+                let key_with_hash = load_private_key_for_auth(&session.private_key_path)?;
+                handle
+                    .authenticate_publickey(&session.user, key_with_hash)
+                    .await
+                    .context("publickey auth failed")?
+            }
+        };
+
+        if !authed {
+            let _ = handle
+                .disconnect(Disconnect::ByApplication, "auth failed", "")
+                .await;
+            bail!(t(
+                "认证失败（用户名、密码或密钥不正确）",
+                "authentication failed (wrong username, password or key)"
+            ));
+        }
+
+        let _ = handle
+            .disconnect(Disconnect::ByApplication, "bye", "")
+            .await;
+        Ok(())
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(20), attempt).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!(t("连接超时（20 秒）", "connection timed out (20s)"))),
+    }
+}
+
 pub async fn run_exec(session: Session, command: &str) -> Result<ExecResult> {
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(std::time::Duration::from_secs(60 * 10)),
@@ -823,6 +880,26 @@ fn _assert_handle_send() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_connection_fails_fast_on_closed_port() {
+        // 绑定临时端口后立刻释放，对它发起连接必然失败（refused，
+        // 或极小概率端口被他人复用导致握手/认证失败）——任何一种都应
+        // 走错误路径快速返回，而不是挂到 20 秒超时。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let mut session = Session::new_empty();
+        session.host = "127.0.0.1".into();
+        session.port = port;
+        session.user = "nobody".into();
+
+        let started = std::time::Instant::now();
+        let result = test_connection(session).await;
+        assert!(result.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    }
 
     #[test]
     fn extracts_osc7_bel_and_st_paths() {

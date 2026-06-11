@@ -105,6 +105,12 @@ msgstr "浏览…"
 msgid "Pick the private key itself (not the .pub public key)"
 msgstr "选择私钥本身（不是 .pub 公钥文件）"
 
+msgid "Test connection"
+msgstr "测试连接"
+
+msgid "Testing…"
+msgstr "测试中…"
+
 msgid "Cancel"
 msgstr "取消"
 

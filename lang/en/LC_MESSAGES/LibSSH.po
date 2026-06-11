@@ -105,6 +105,12 @@ msgstr "Browse…"
 msgid "Pick the private key itself (not the .pub public key)"
 msgstr "Pick the private key itself (not the .pub public key)"
 
+msgid "Test connection"
+msgstr "Test connection"
+
+msgid "Testing…"
+msgstr "Testing…"
+
 msgid "Cancel"
 msgstr "Cancel"
 

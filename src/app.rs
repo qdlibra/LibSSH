@@ -3,6 +3,7 @@ slint::include_modules!();
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -700,7 +701,12 @@ fn wire_callbacks(
         }
     });
 
+    // 「测试连接」防串扰代际号：打开对话框或发起新测试都 +1，
+    // 在途任务写回前比对，避免旧结果落到新打开的草稿上。
+    let test_epoch = Arc::new(AtomicU64::new(0));
+
     let weak = window.as_weak();
+    let new_test_epoch = test_epoch.clone();
     window.on_new_session_clicked(move || {
         if let Some(w) = weak.upgrade() {
             let empty = Session::new_empty();
@@ -713,6 +719,9 @@ fn wire_callbacks(
             w.set_dialog_auth("password".into());
             w.set_dialog_password("".into());
             w.set_dialog_key_path("".into());
+            new_test_epoch.fetch_add(1, Ordering::SeqCst);
+            w.set_dialog_test_status("idle".into());
+            w.set_dialog_test_message("".into());
             w.set_dialog_open(true);
         }
     });
@@ -787,6 +796,7 @@ fn wire_callbacks(
 
     let weak = window.as_weak();
     let edit_store = store.clone();
+    let edit_test_epoch = test_epoch.clone();
     window.on_edit_session(move |id: SharedString| {
         let id = id.to_string();
         let store = edit_store.borrow();
@@ -802,6 +812,9 @@ fn wire_callbacks(
             w.set_dialog_auth(session.auth.as_str().into());
             w.set_dialog_password("".into());
             w.set_dialog_key_path(session.private_key_path.clone().into());
+            edit_test_epoch.fetch_add(1, Ordering::SeqCst);
+            w.set_dialog_test_status("idle".into());
+            w.set_dialog_test_message("".into());
             w.set_dialog_editing(true);
             w.set_dialog_open(true);
         }
@@ -902,6 +915,76 @@ fn wire_callbacks(
                 w.set_dialog_key_path(path.into());
             }
         }
+    });
+
+    let weak = window.as_weak();
+    let test_store = store.clone();
+    let test_runtime = runtime.clone();
+    let test_epoch_cb = test_epoch.clone();
+    window.on_session_dialog_test(move |draft: SessionDraft| {
+        let Some(w) = weak.upgrade() else {
+            return;
+        };
+        let my_epoch = test_epoch_cb.fetch_add(1, Ordering::SeqCst) + 1;
+
+        let host = draft.host.to_string().trim().to_string();
+        if host.is_empty() {
+            w.set_dialog_test_status("fail".into());
+            w.set_dialog_test_message(
+                crate::i18n::t("请先填写主机地址", "Fill in the host address first").into(),
+            );
+            return;
+        }
+
+        let id = draft.id.to_string();
+        let mut session = Session {
+            id: id.clone(),
+            name: String::new(),
+            host,
+            port: if draft.port <= 0 {
+                22
+            } else {
+                draft.port as u16
+            },
+            user: draft.user.to_string(),
+            auth: AuthMethod::from_str(&draft.auth.to_string()),
+            password: Secret::new(draft.password.to_string()),
+            private_key_path: draft.private_key_path.to_string().replace('\\', "/"),
+            proxy: String::new(),
+            last_used: None,
+        };
+        // 与正式连接保持一致：编辑时密码留空沿用已存密码、proxy 沿用已存配置；
+        // json 密码为空再回查 keyring。
+        if let Some(saved) = test_store.borrow().get(&id) {
+            session.proxy = saved.proxy.clone();
+            if session.auth == AuthMethod::Password && session.password.as_str().is_empty() {
+                session.password = saved.password.clone();
+            }
+        }
+        crate::secrets::resolve_session_password(&mut session);
+
+        w.set_dialog_test_status("testing".into());
+        w.set_dialog_test_message(crate::i18n::t("正在连接…", "Connecting…").into());
+
+        let weak = weak.clone();
+        let epoch = test_epoch_cb.clone();
+        test_runtime.spawn(async move {
+            let outcome = crate::ssh::test_connection(session).await;
+            let (status, message) = match outcome {
+                Ok(()) => (
+                    "ok",
+                    crate::i18n::t("连接成功", "Connection successful").to_string(),
+                ),
+                Err(e) => ("fail", format!("{e:#}")),
+            };
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                // 对话框已重开或发起了新测试 → 此结果过期，不写回。
+                if epoch.load(Ordering::SeqCst) == my_epoch {
+                    w.set_dialog_test_status(status.into());
+                    w.set_dialog_test_message(message.as_str().into());
+                }
+            });
+        });
     });
 
     let weak = window.as_weak();
