@@ -30,14 +30,16 @@ AI 工具（Codex / Claude Code）通过 `LibSSH skill run` 操作远程主机�
 
 ### A2. `scripts/codesign-macos.sh <binary-or-app>`
 
-- `codesign --force --sign "LibSSH Dev Signing" --identifier com.libra.LibSSH <target>`。
+- `codesign --force --sign "LibSSH Dev Signing" --identifier dev.libssh.LibSSH <target>`（identifier 与打包脚本的 `CFBundleIdentifier` 保持一致）。
 - 固定 `--identifier` 是关键：钥匙串信任判定（designated requirement）从"内容哈希"变为"证书 + identifier"，跨构建恒定。
 - 证书不存在时提示先跑 A1；非 macOS 平台提示后退出。
 
 ### A3. 接线
 
-- `scripts/package-macos-dmg.sh`：打包前对 `.app` 执行签名。
-- 新增 `scripts/install-local.sh`：`cargo build --release` → 签名 `target/release/LibSSH` → 安装到 `~/.local/bin/LibSSH`（替代手动 cp，保证签名步骤不漏）。
+- 实际调用链路：`~/.local/bin/LibSSH` 是 GUI「启用全局 CLI」创建的**符号链接**，指向 `/Applications/LibSSH.app/Contents/MacOS/LibSSH`——签名落点是 `.app`。
+- `scripts/package-macos-dmg.sh`：装配 `.app` 后、打 dmg 前签名（证书存在才签，CI 无证书时保持 adhoc 不破坏流水线）。
+- 新增 `scripts/install-macos-app.sh`：`cargo build --release` → 打包（内含签名）→ 部署到 `/Applications/LibSSH.app`（symlink 指向不变，AI 调用即刻生效）。
+- 已知边界：自动更新安装的官方构建无本地签名，更新后需重跑 `install-macos-app.sh` 恢复。
 - README + AGENTS.md 增加说明。
 
 ### 旧钥匙串条目
@@ -74,7 +76,7 @@ AI 工具（Codex / Claude Code）通过 `LibSSH skill run` 操作远程主机�
 
 ## 组件 C：SKILL 文档同步
 
-`src/cli.rs` `generated_skill_markdown()` 的"When a command is blocked"一节增加：被挡时可建议用户运行 `LibSSH skill policy allow-preset readonly` 一次性导入只读集，替代逐条 allow。重新导出覆盖 `SKILL/SKILL.md`。
+`src/cli.rs` `generated_skill_markdown()` 的"When a command is blocked"一节增加：被挡时可建议用户运行 `LibSSH skill policy allow-preset readonly` 一次性导入只读集，替代逐条 allow。重新导出覆盖两处副本：`SKILL/SKILL.md` 与 `.claude/skills/libssh/SKILL.md`（AGENTS.md 指定的刷新点）。
 
 ## 最终体验（数据流）
 
@@ -82,13 +84,13 @@ AI 工具（Codex / Claude Code）通过 `LibSSH skill run` 操作远程主机�
 
 ```bash
 scripts/setup-macos-codesign.sh        # 建证书（输一次管理员密码）
-scripts/install-local.sh               # 构建 + 签名 + 装入 ~/.local/bin
+scripts/install-macos-app.sh           # 构建 + 打包签名 + 部署 /Applications
 LibSSH skill policy enable
 LibSSH skill policy allow-preset readonly
 # 旧钥匙串条目首次访问各点一次「始终允许」
 ```
 
-之后：AI 跑 `sessions` / `check` / `run` 全程无人值守；预设外命令（如 `systemctl restart`）照旧被挡，由用户决定是否单独 allow；每次重新构建后跑 `install-local.sh`（或单独 `codesign-macos.sh`），签名恒定，钥匙串不再弹窗。
+之后：AI 跑 `sessions` / `check` / `run` 全程无人值守；预设外命令（如 `systemctl restart`）照旧被挡，由用户决定是否单独 allow；每次重新构建后跑 `install-macos-app.sh`（或对 `target/release/LibSSH` 单独 `codesign-macos.sh`），签名恒定，钥匙串不再弹窗。
 
 ## 错误处理
 
