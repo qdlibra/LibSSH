@@ -182,7 +182,8 @@ pub fn detect_dark_mode() -> Option<bool> {
             .output()
         {
             if out.status.success() {
-                if let Some(dark) = parse_gnome_color_scheme(&String::from_utf8_lossy(&out.stdout)) {
+                if let Some(dark) = parse_gnome_color_scheme(&String::from_utf8_lossy(&out.stdout))
+                {
                     return Some(dark);
                 }
             }
@@ -358,8 +359,8 @@ mod cli_link {
 
         // 每个测试用独立临时目录，避免并行冲突；用例名作为 tag。
         fn temp_dir(tag: &str) -> PathBuf {
-            let d = std::env::temp_dir()
-                .join(format!("libssh-clilink-{}-{}", tag, std::process::id()));
+            let d =
+                std::env::temp_dir().join(format!("libssh-clilink-{}-{}", tag, std::process::id()));
             let _ = std::fs::remove_dir_all(&d);
             std::fs::create_dir_all(&d).unwrap();
             d

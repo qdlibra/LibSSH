@@ -302,7 +302,10 @@ pub async fn test_connection(session: Session) -> Result<()> {
 
     match tokio::time::timeout(std::time::Duration::from_secs(20), attempt).await {
         Ok(result) => result,
-        Err(_) => Err(anyhow!(t("连接超时（20 秒）", "connection timed out (20s)"))),
+        Err(_) => Err(anyhow!(t(
+            "连接超时（20 秒）",
+            "connection timed out (20s)"
+        ))),
     }
 }
 

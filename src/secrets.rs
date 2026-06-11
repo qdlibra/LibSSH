@@ -126,9 +126,8 @@ mod tests {
     #[test]
     fn migration_is_idempotent_on_already_empty_passwords() {
         let mut sessions = vec![session_with_pwd("a", "")];
-        let moved = migrate_plaintext_passwords(&mut sessions, |_, _| {
-            panic!("不应为已空密码调用写入")
-        });
+        let moved =
+            migrate_plaintext_passwords(&mut sessions, |_, _| panic!("不应为已空密码调用写入"));
         assert_eq!(moved, 0);
     }
 

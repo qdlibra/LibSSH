@@ -5,14 +5,14 @@ mod cli;
 mod config;
 mod history;
 mod i18n;
+mod logbuf;
 mod proxy;
 mod secrets;
 mod sftp;
 mod ssh;
 mod ssh_config;
-mod updater;
 mod system;
-mod logbuf;
+mod updater;
 
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::prelude::*;

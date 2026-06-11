@@ -169,7 +169,8 @@ pub async fn check_for_update(
     skipped: Option<String>,
     manual: bool,
 ) -> Result<Option<ReleaseInfo>> {
-    let arch = target_arch_tag().ok_or_else(|| anyhow!("unsupported architecture for auto-update"))?;
+    let arch =
+        target_arch_tag().ok_or_else(|| anyhow!("unsupported architecture for auto-update"))?;
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
 
     let client = reqwest::Client::builder()
@@ -230,7 +231,10 @@ pub async fn download_and_verify(
     use tokio::io::AsyncWriteExt;
 
     if !is_allowed_host(&rel.asset_url) {
-        bail!("refusing to download from untrusted host: {}", rel.asset_url);
+        bail!(
+            "refusing to download from untrusted host: {}",
+            rel.asset_url
+        );
     }
     let checksums_url = rel
         .checksums_url
@@ -272,7 +276,11 @@ pub async fn download_and_verify(
     // 任何失败（取消、网络中断、写盘、校验不符）都清理半成品文件，避免 cache 残留坏 dmg。
     let dest = dest_dir.join(&rel.asset_name);
     let result: Result<()> = async {
-        let resp = client.get(&rel.asset_url).send().await?.error_for_status()?;
+        let resp = client
+            .get(&rel.asset_url)
+            .send()
+            .await?
+            .error_for_status()?;
         let total = resp.content_length().unwrap_or(rel.asset_size);
         let mut file = tokio::fs::File::create(&dest).await?;
         let mut downloaded: u64 = 0;
@@ -369,7 +377,8 @@ pub fn install(dmg_path: &Path) -> Result<InstallOutcome> {
         return Ok(InstallOutcome::GuidedManual);
     }
 
-    let mount_point = std::env::temp_dir().join(format!("LibSSH-update-mnt-{}", std::process::id()));
+    let mount_point =
+        std::env::temp_dir().join(format!("LibSSH-update-mnt-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&mount_point);
     let attached = Command::new("/usr/bin/hdiutil")
         .args(["attach", "-nobrowse", "-noverify", "-mountpoint"])
@@ -384,20 +393,31 @@ pub fn install(dmg_path: &Path) -> Result<InstallOutcome> {
 
     let mount_app = mount_point.join("LibSSH.app");
     if !mount_app.exists() {
-        let _ = Command::new("/usr/bin/hdiutil").arg("detach").arg(&mount_point).status();
+        let _ = Command::new("/usr/bin/hdiutil")
+            .arg("detach")
+            .arg(&mount_point)
+            .status();
         open_dmg(dmg_path);
         return Ok(InstallOutcome::GuidedManual);
     }
 
     let script_path = std::env::temp_dir().join(format!("LibSSH-update-{}.sh", std::process::id()));
-    let script = build_helper_script(std::process::id(), &mount_app, &bundle, &mount_point, &script_path);
+    let script = build_helper_script(
+        std::process::id(),
+        &mount_app,
+        &bundle,
+        &mount_point,
+        &script_path,
+    );
     std::fs::write(&script_path, script).context("failed to write helper script")?;
     use std::os::unix::fs::PermissionsExt;
     if let Err(e) = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700)) {
         tracing::warn!("failed to chmod 700 the update helper script: {e}");
     }
 
-    Ok(InstallOutcome::ReadyToRestart { helper_script: script_path })
+    Ok(InstallOutcome::ReadyToRestart {
+        helper_script: script_path,
+    })
 }
 
 /// 探测目录是否可写（用临时探针文件）。
@@ -448,7 +468,11 @@ mod tests {
     }
 
     fn asset(name: &str) -> GhAsset {
-        GhAsset { name: name.into(), browser_download_url: format!("https://x/{name}"), size: 1 }
+        GhAsset {
+            name: name.into(),
+            browser_download_url: format!("https://x/{name}"),
+            size: 1,
+        }
     }
 
     #[test]
@@ -466,15 +490,24 @@ mod tests {
             asset("LibSSH-windows-x86_64.exe"),
             asset("checksums.txt"),
         ];
-        assert_eq!(pick_asset(&assets, "arm64").unwrap().name, "LibSSH-macos-arm64.dmg");
-        assert_eq!(pick_asset(&assets, "x86_64").unwrap().name, "LibSSH-macos-x86_64.dmg");
+        assert_eq!(
+            pick_asset(&assets, "arm64").unwrap().name,
+            "LibSSH-macos-arm64.dmg"
+        );
+        assert_eq!(
+            pick_asset(&assets, "x86_64").unwrap().name,
+            "LibSSH-macos-x86_64.dmg"
+        );
         assert!(pick_asset(&assets, "riscv").is_none());
     }
 
     #[test]
     fn checksums_asset_url_finds_checksums_txt() {
         let assets = vec![asset("LibSSH-macos-arm64.dmg"), asset("checksums.txt")];
-        assert_eq!(checksums_asset_url(&assets).as_deref(), Some("https://x/checksums.txt"));
+        assert_eq!(
+            checksums_asset_url(&assets).as_deref(),
+            Some("https://x/checksums.txt")
+        );
         assert!(checksums_asset_url(&[asset("LibSSH-macos-arm64.dmg")]).is_none());
     }
 
@@ -494,13 +527,22 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  LibSSH-macos-a
     #[test]
     fn parse_checksums_tolerates_star_prefix_and_paths() {
         let text = "abc123  *dist/LibSSH-macos-arm64.dmg\n";
-        assert_eq!(parse_checksums(text, "LibSSH-macos-arm64.dmg").as_deref(), Some("abc123"));
+        assert_eq!(
+            parse_checksums(text, "LibSSH-macos-arm64.dmg").as_deref(),
+            Some("abc123")
+        );
     }
 
     #[test]
     fn sha256_hex_matches_known_vectors() {
-        assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-        assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     const SAMPLE_JSON: &str = r###"{
@@ -519,9 +561,15 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  LibSSH-macos-a
         assert_eq!(info.tag, "v0.2.4");
         assert_eq!(info.version, semver::Version::parse("0.2.4").unwrap());
         assert_eq!(info.asset_name, "LibSSH-macos-arm64.dmg");
-        assert_eq!(info.asset_url, "https://objects.githubusercontent.com/a.dmg");
+        assert_eq!(
+            info.asset_url,
+            "https://objects.githubusercontent.com/a.dmg"
+        );
         assert_eq!(info.asset_size, 123);
-        assert_eq!(info.checksums_url.as_deref(), Some("https://objects.githubusercontent.com/checksums.txt"));
+        assert_eq!(
+            info.checksums_url.as_deref(),
+            Some("https://objects.githubusercontent.com/checksums.txt")
+        );
         assert!(info.notes.contains("自动更新"));
         assert!(select_release_info(&rel, "riscv").is_none());
     }
@@ -529,8 +577,14 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  LibSSH-macos-a
     #[test]
     fn find_app_bundle_walks_up_to_dot_app() {
         let exe = Path::new("/Applications/LibSSH.app/Contents/MacOS/LibSSH");
-        assert_eq!(find_app_bundle(exe), Some(PathBuf::from("/Applications/LibSSH.app")));
-        assert_eq!(find_app_bundle(Path::new("/home/q/proj/target/release/LibSSH")), None);
+        assert_eq!(
+            find_app_bundle(exe),
+            Some(PathBuf::from("/Applications/LibSSH.app"))
+        );
+        assert_eq!(
+            find_app_bundle(Path::new("/home/q/proj/target/release/LibSSH")),
+            None
+        );
         assert_eq!(
             find_app_bundle(Path::new("/Applications/LibSSH.app")),
             Some(PathBuf::from("/Applications/LibSSH.app"))
@@ -555,9 +609,15 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  LibSSH-macos-a
 
     #[test]
     fn is_allowed_host_requires_https_and_whitelist() {
-        assert!(is_allowed_host("https://api.github.com/repos/x/releases/latest"));
-        assert!(is_allowed_host("https://objects.githubusercontent.com/a.dmg"));
-        assert!(is_allowed_host("https://release-assets.githubusercontent.com/a.dmg"));
+        assert!(is_allowed_host(
+            "https://api.github.com/repos/x/releases/latest"
+        ));
+        assert!(is_allowed_host(
+            "https://objects.githubusercontent.com/a.dmg"
+        ));
+        assert!(is_allowed_host(
+            "https://release-assets.githubusercontent.com/a.dmg"
+        ));
         assert!(!is_allowed_host("http://api.github.com/x"));
         assert!(!is_allowed_host("https://evil.com/a.dmg"));
         assert!(!is_allowed_host("https://api.github.com.evil.com/x"));

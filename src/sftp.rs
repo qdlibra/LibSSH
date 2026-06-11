@@ -114,7 +114,9 @@ impl SftpHandle {
     }
 
     pub fn write_file(&self, remote: String, content: String) {
-        let _ = self.commands.send(SftpCommand::WriteFile { remote, content });
+        let _ = self
+            .commands
+            .send(SftpCommand::WriteFile { remote, content });
     }
 
     pub fn close(&self) {
@@ -958,8 +960,7 @@ async fn download_dir_impl(
     while !queue.is_empty() && depth <= 32 {
         let mut next = Vec::new();
         for (rdir, ldir) in queue {
-            std::fs::create_dir_all(&ldir)
-                .with_context(|| format!("create local dir {ldir}"))?;
+            std::fs::create_dir_all(&ldir).with_context(|| format!("create local dir {ldir}"))?;
             for e in list_dir_impl(sftp, &rdir).await.unwrap_or_default() {
                 let lpath = format!("{}/{}", ldir, e.name);
                 if e.is_dir {
@@ -1088,7 +1089,10 @@ mod tests {
 
     #[test]
     fn check_editable_rejects_too_large() {
-        assert!(matches!(check_editable(b"abcd", 2), Err(EditableError::TooLarge)));
+        assert!(matches!(
+            check_editable(b"abcd", 2),
+            Err(EditableError::TooLarge)
+        ));
     }
 
     #[test]

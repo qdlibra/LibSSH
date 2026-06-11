@@ -643,7 +643,10 @@ mod tests {
         let mut loaded = loaded;
         loaded.remove_quick_command("q1");
         loaded.save().unwrap();
-        assert!(ConfigStore::load_at(path).unwrap().quick_commands().is_empty());
+        assert!(ConfigStore::load_at(path)
+            .unwrap()
+            .quick_commands()
+            .is_empty());
     }
 
     #[test]

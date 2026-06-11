@@ -90,10 +90,9 @@ pub fn run(log_buffer: crate::logbuf::LogBuffer) -> anyhow::Result<()> {
     // keyring 不可用时首败即停、明文保留，下次启动重试）。
     {
         let mut s = store.borrow_mut();
-        let moved =
-            crate::secrets::migrate_plaintext_passwords(s.sessions_mut(), |id, pwd| {
-                crate::secrets::store_password(id, pwd)
-            });
+        let moved = crate::secrets::migrate_plaintext_passwords(s.sessions_mut(), |id, pwd| {
+            crate::secrets::store_password(id, pwd)
+        });
         if moved > 0 {
             if let Err(e) = s.save() {
                 tracing::warn!("save after password migration failed: {e:#}");
@@ -122,8 +121,7 @@ pub fn run(log_buffer: crate::logbuf::LogBuffer) -> anyhow::Result<()> {
     let handles: Rc<RefCell<HashMap<String, SessionHandle>>> =
         Rc::new(RefCell::new(HashMap::new()));
     // tab → 连接时的 Session 副本：断线重连用同一配置原地重建连接。
-    let tab_sessions: Rc<RefCell<HashMap<String, Session>>> =
-        Rc::new(RefCell::new(HashMap::new()));
+    let tab_sessions: Rc<RefCell<HashMap<String, Session>>> = Rc::new(RefCell::new(HashMap::new()));
     // 全局命令历史 + 每标签的输入行跟踪（粘贴在剪贴板线程 feed，故用 Arc<Mutex>）。
     let cmd_history: Rc<RefCell<crate::history::CommandHistory>> =
         Rc::new(RefCell::new(crate::history::CommandHistory::load_default()));
@@ -1138,12 +1136,7 @@ fn wire_callbacks(
             let s = qcm_store.borrow();
             let existing = s.quick_commands().iter().find(|q| q.id == id.as_str());
             w.set_qc_dialog_id(id.clone());
-            w.set_qc_dialog_name(
-                existing
-                    .map(|q| q.name.clone())
-                    .unwrap_or_default()
-                    .into(),
-            );
+            w.set_qc_dialog_name(existing.map(|q| q.name.clone()).unwrap_or_default().into());
             w.set_qc_dialog_command(
                 existing
                     .map(|q| q.command.clone())
@@ -1171,7 +1164,11 @@ fn wire_callbacks(
                     } else {
                         id.to_string()
                     },
-                    name: if name.is_empty() { command.clone() } else { name },
+                    name: if name.is_empty() {
+                        command.clone()
+                    } else {
+                        name
+                    },
                     command,
                 });
                 if let Err(e) = s.save() {
@@ -1982,7 +1979,8 @@ fn wire_callbacks(
     });
 
     // ===== 自动更新接线 =====
-    let pending_release: Arc<Mutex<Option<crate::updater::ReleaseInfo>>> = Arc::new(Mutex::new(None));
+    let pending_release: Arc<Mutex<Option<crate::updater::ReleaseInfo>>> =
+        Arc::new(Mutex::new(None));
     let pending_helper: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
     // 当前下载的取消开关（点"取消"时置位，download_and_verify 轮询它中止）。
     let pending_cancel: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>> =
@@ -2025,7 +2023,9 @@ fn wire_callbacks(
             let weak = window.as_weak();
             let pending = pending_release.clone();
             runtime.spawn(async move {
-                match crate::updater::check_for_update(env!("CARGO_PKG_VERSION"), skipped, false).await {
+                match crate::updater::check_for_update(env!("CARGO_PKG_VERSION"), skipped, false)
+                    .await
+                {
                     Ok(Some(rel)) => {
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(w) = weak.upgrade() {
@@ -2052,7 +2052,9 @@ fn wire_callbacks(
             let weak = weak.clone();
             let pending = pending.clone();
             runtime.spawn(async move {
-                let res = crate::updater::check_for_update(env!("CARGO_PKG_VERSION"), skipped, true).await;
+                let res =
+                    crate::updater::check_for_update(env!("CARGO_PKG_VERSION"), skipped, true)
+                        .await;
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(w) = weak.upgrade() {
                         match res {
@@ -2061,13 +2063,25 @@ fn wire_callbacks(
                                 show_release(&w, &rel);
                             }
                             Ok(None) => {
-                                w.set_alert_title(crate::i18n::t("检查更新", "Check for updates").into());
-                                w.set_alert_message(crate::i18n::t("已是最新版本。", "You are on the latest version.").into());
+                                w.set_alert_title(
+                                    crate::i18n::t("检查更新", "Check for updates").into(),
+                                );
+                                w.set_alert_message(
+                                    crate::i18n::t(
+                                        "已是最新版本。",
+                                        "You are on the latest version.",
+                                    )
+                                    .into(),
+                                );
                                 w.set_alert_open(true);
                             }
                             Err(_) => {
-                                w.set_alert_title(crate::i18n::t("检查更新", "Check for updates").into());
-                                w.set_alert_message(crate::i18n::t("检查更新失败。", "Update check failed.").into());
+                                w.set_alert_title(
+                                    crate::i18n::t("检查更新", "Check for updates").into(),
+                                );
+                                w.set_alert_message(
+                                    crate::i18n::t("检查更新失败。", "Update check failed.").into(),
+                                );
                                 w.set_alert_open(true);
                             }
                         }
@@ -2171,7 +2185,9 @@ fn wire_callbacks(
     {
         let weak = window.as_weak();
         window.on_update_later(move || {
-            if let Some(w) = weak.upgrade() { w.set_update_open(false); }
+            if let Some(w) = weak.upgrade() {
+                w.set_update_open(false);
+            }
         });
     }
 
@@ -2186,7 +2202,7 @@ fn wire_callbacks(
             if let Some(w) = weak.upgrade() {
                 w.set_update_progress(0.0);
                 w.set_update_phase("prompt".into()); // 回到 prompt，可重新发起
-                w.set_update_open(false);            // 关闭对话框
+                w.set_update_open(false); // 关闭对话框
             }
         });
     }
@@ -2202,7 +2218,9 @@ fn wire_callbacks(
                 s.set_skipped_version(Some(rel.tag.clone()));
                 let _ = s.save();
             }
-            if let Some(w) = weak.upgrade() { w.set_update_open(false); }
+            if let Some(w) = weak.upgrade() {
+                w.set_update_open(false);
+            }
         });
     }
 
@@ -2215,7 +2233,9 @@ fn wire_callbacks(
                 #[cfg(target_os = "macos")]
                 crate::updater::run_helper_and_exit(&_script); // 不返回，进程被替换
             }
-            if let Some(w) = weak.upgrade() { w.set_update_open(false); }
+            if let Some(w) = weak.upgrade() {
+                w.set_update_open(false);
+            }
         });
     }
 
@@ -2237,7 +2257,9 @@ fn wire_callbacks(
             #[cfg(target_os = "macos")]
             let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
             #[cfg(target_os = "windows")]
-            let _ = std::process::Command::new("cmd").args(["/C", "start", url]).spawn();
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", url])
+                .spawn();
             #[cfg(all(unix, not(target_os = "macos")))]
             let _ = std::process::Command::new("xdg-open").arg(url).spawn();
         });
@@ -2250,7 +2272,9 @@ fn wire_callbacks(
             #[cfg(target_os = "macos")]
             let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
             #[cfg(target_os = "windows")]
-            let _ = std::process::Command::new("cmd").args(["/C", "start", url]).spawn();
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", url])
+                .spawn();
             #[cfg(all(unix, not(target_os = "macos")))]
             let _ = std::process::Command::new("xdg-open").arg(url).spawn();
         });
@@ -2703,11 +2727,9 @@ fn apply_session_event_to_window(
                 None => {
                     update_terminal(&|t| {
                         t.conn_lost = true;
-                        t.status = format!(
-                            "{} - {reason}",
-                            crate::i18n::t("已断开", "Disconnected")
-                        )
-                        .into();
+                        t.status =
+                            format!("{} - {reason}", crate::i18n::t("已断开", "Disconnected"))
+                                .into();
                     });
                 }
             }
@@ -3642,7 +3664,10 @@ mod tests {
         assert_eq!((cols, rows), (120, 40));
         assert_eq!(*last_size.lock().unwrap(), (120, 40));
         assert!(should_rebuild);
-        assert_eq!(bufs.lock().unwrap()[tab_id].parser.screen().size(), (40, 120));
+        assert_eq!(
+            bufs.lock().unwrap()[tab_id].parser.screen().size(),
+            (40, 120)
+        );
     }
 
     #[test]
@@ -3666,8 +3691,7 @@ mod tests {
         let last_size = Arc::new(Mutex::new((80, 24)));
 
         // 请求与当前完全相同的网格（80 列 × 24 行）。
-        let (cols, rows, applied) =
-            resize_terminal_buffer(tab_id, 80.0, 24.0, &bufs, &last_size);
+        let (cols, rows, applied) = resize_terminal_buffer(tab_id, 80.0, 24.0, &bufs, &last_size);
 
         assert_eq!((cols, rows), (80, 24));
         assert!(!applied, "网格未变时必须短路，不得重复 resize");
@@ -3767,7 +3791,9 @@ mod tests {
             "list directory failed: permission denied".into()
         )));
         // 发起加载 / 中途进度 / 无关状态都不得复位，否则会过早消除「加载中…」。
-        assert!(!settles_sftp_loading(&SessionEvent::CwdChanged("/root".into())));
+        assert!(!settles_sftp_loading(&SessionEvent::CwdChanged(
+            "/root".into()
+        )));
         assert!(!settles_sftp_loading(&SessionEvent::SftpStatus(
             "Loading /home...".into()
         )));
