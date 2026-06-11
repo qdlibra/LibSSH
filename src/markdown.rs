@@ -118,17 +118,14 @@ pub fn notes_to_blocks(md: &str) -> Vec<Block> {
             }
             Event::End(TagEnd::Heading(_)) => flush(&mut blocks, &mut buf, &mut mode),
 
-            // 列表项内的段落不另起块：文字继续累积到当前 item。
-            Event::Start(Tag::Paragraph) => {
-                if !matches!(mode, Mode::Item { .. }) {
-                    flush(&mut blocks, &mut buf, &mut mode);
-                    mode = Mode::Para;
-                }
+            // 列表项内的段落不另起块：守卫为假（mode 是 Item）时落到 `_ => {}` 空操作，
+            // 文字继续累积到当前 item。
+            Event::Start(Tag::Paragraph) if !matches!(mode, Mode::Item { .. }) => {
+                flush(&mut blocks, &mut buf, &mut mode);
+                mode = Mode::Para;
             }
-            Event::End(TagEnd::Paragraph) => {
-                if !matches!(mode, Mode::Item { .. }) {
-                    flush(&mut blocks, &mut buf, &mut mode);
-                }
+            Event::End(TagEnd::Paragraph) if !matches!(mode, Mode::Item { .. }) => {
+                flush(&mut blocks, &mut buf, &mut mode);
             }
 
             Event::Start(Tag::List(start)) => lists.push(ListCtx {

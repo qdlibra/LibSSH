@@ -2163,7 +2163,7 @@ fn wire_callbacks(
                                     Ok(Ok(crate::updater::InstallOutcome::GuidedManual)) => {
                                         *helper.lock().unwrap() = None;
                                         w.set_update_guided(true);
-                                        w.set_update_note_blocks(notes_blocks_model(&crate::i18n::t(
+                                        w.set_update_note_blocks(notes_blocks_model(crate::i18n::t(
                                             "请将 LibSSH 拖到「应用程序」文件夹以完成更新。",
                                             "Drag LibSSH into the Applications folder to finish updating.",
                                         )));
