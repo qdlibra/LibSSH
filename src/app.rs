@@ -515,6 +515,20 @@ fn empty_model<T: 'static + Clone + Default>() -> ModelRc<T> {
     ModelRc::from(Rc::new(VecModel::<T>::default()))
 }
 
+/// 把 markdown 文本解析成 NoteBlock 模型，供更新弹窗的说明区渲染。
+fn notes_blocks_model(md: &str) -> ModelRc<NoteBlock> {
+    let rows: Vec<NoteBlock> = crate::markdown::notes_to_blocks(md)
+        .into_iter()
+        .map(|b| NoteBlock {
+            kind: b.kind.into(),
+            text: b.text.into(),
+            level: b.level,
+            marker: b.marker.into(),
+        })
+        .collect();
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
 fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<SessionInfo>) {
     let rows: Vec<SessionInfo> = store
         .sessions()
@@ -1990,7 +2004,7 @@ fn wire_callbacks(
     fn show_release(w: &AppWindow, rel: &crate::updater::ReleaseInfo) {
         w.set_update_current(env!("CARGO_PKG_VERSION").into());
         w.set_update_version(rel.version.to_string().into());
-        w.set_update_notes(rel.notes.clone().into());
+        w.set_update_note_blocks(notes_blocks_model(&rel.notes));
         w.set_update_phase("prompt".into());
         w.set_update_progress(0.0);
         w.set_update_guided(false);
@@ -2149,10 +2163,10 @@ fn wire_callbacks(
                                     Ok(Ok(crate::updater::InstallOutcome::GuidedManual)) => {
                                         *helper.lock().unwrap() = None;
                                         w.set_update_guided(true);
-                                        w.set_update_notes(crate::i18n::t(
+                                        w.set_update_note_blocks(notes_blocks_model(&crate::i18n::t(
                                             "请将 LibSSH 拖到「应用程序」文件夹以完成更新。",
                                             "Drag LibSSH into the Applications folder to finish updating.",
-                                        ).into());
+                                        )));
                                         w.set_update_phase("ready".into());
                                     }
                                     _ => {
