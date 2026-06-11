@@ -73,9 +73,9 @@ pub fn extract_osc7_path(text: &str) -> Option<String> {
         i += 2;
         let mut end = i;
         while end < bytes.len() {
-            if bytes[end] == 0x07 {
-                break;
-            } else if bytes[end] == 0x1b && end + 1 < bytes.len() && bytes[end + 1] == b'\\' {
+            if bytes[end] == 0x07
+                || (bytes[end] == 0x1b && end + 1 < bytes.len() && bytes[end + 1] == b'\\')
+            {
                 break;
             }
             end += 1;
@@ -702,7 +702,7 @@ fn parse_monitor_block(
             prev_net.insert(iface, (rx, tx));
         }
         *prev_net_at = now;
-        net.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
+        net.sort_by_key(|e| std::cmp::Reverse(e.1 + e.2));
     }
 
     let cpu_percent = if have_cpu {

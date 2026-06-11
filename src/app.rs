@@ -602,6 +602,7 @@ fn set_session_latency(win: &AppWindow, id: &str, ms: i32) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn wire_callbacks(
     window: &AppWindow,
     store: Rc<RefCell<ConfigStore>>,
@@ -824,12 +825,12 @@ fn wire_callbacks(
     window.on_remove_session(move |id: SharedString| {
         {
             let mut s = remove_store.borrow_mut();
-            s.remove(&id.to_string());
+            s.remove(id.as_ref());
             if let Err(err) = s.save() {
                 tracing::warn!("failed to save config: {err:#}");
             }
         }
-        crate::secrets::delete_password(&id.to_string());
+        crate::secrets::delete_password(id.as_ref());
         sync_sessions_to_model(&remove_store.borrow(), &remove_sessions);
         if let Some(w) = weak.upgrade() {
             let _ = w.get_sessions();
@@ -869,7 +870,7 @@ fn wire_callbacks(
                 draft.port as u16
             },
             user: draft.user.to_string(),
-            auth: AuthMethod::from_str(&draft.auth.to_string()),
+            auth: AuthMethod::from_str(draft.auth.as_ref()),
             password,
             private_key_path: draft.private_key_path.to_string().replace('\\', "/"),
             proxy: String::new(),
@@ -945,7 +946,7 @@ fn wire_callbacks(
                 draft.port as u16
             },
             user: draft.user.to_string(),
-            auth: AuthMethod::from_str(&draft.auth.to_string()),
+            auth: AuthMethod::from_str(draft.auth.as_ref()),
             password: Secret::new(draft.password.to_string()),
             private_key_path: draft.private_key_path.to_string().replace('\\', "/"),
             proxy: String::new(),
@@ -2114,7 +2115,7 @@ fn wire_callbacks(
                 let prog_weak = weak.clone();
                 let last_pct = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
                 let on_progress = move |done: u64, total: u64| {
-                    let pct = if total > 0 { done * 100 / total } else { 0 };
+                    let pct = (done * 100).checked_div(total).unwrap_or(0);
                     if last_pct.swap(pct, std::sync::atomic::Ordering::Relaxed) != pct {
                         let prog_weak = prog_weak.clone();
                         let frac = if total > 0 { done as f32 / total as f32 } else { 0.0 };
@@ -2568,6 +2569,7 @@ fn start_session_io(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_session_event_to_window(
     win: &AppWindow,
     tab_id: &str,

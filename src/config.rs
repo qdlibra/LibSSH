@@ -239,7 +239,7 @@ impl Session {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AiSkillConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -247,16 +247,6 @@ pub struct AiSkillConfig {
     pub allowed_commands: Vec<String>,
     #[serde(default)]
     pub denied_commands: Vec<String>,
-}
-
-impl Default for AiSkillConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            allowed_commands: Vec::new(),
-            denied_commands: Vec::new(),
-        }
-    }
 }
 
 impl AiSkillConfig {
@@ -465,6 +455,8 @@ impl ConfigStore {
         self.cache.auto_check_update
     }
 
+    // 预留给设置界面的自动更新开关；UI 接入前仅测试使用。
+    #[allow(dead_code)]
     pub fn set_auto_check_update(&mut self, on: bool) {
         self.cache.auto_check_update = on;
     }

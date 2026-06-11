@@ -317,7 +317,7 @@ async fn run_sftp(
                 )));
                 if is_dir {
                     match download_dir_impl(&sftp, &remote, &local_dir, &events).await {
-                        Ok((ok, failed)) if failed == 0 => {
+                        Ok((ok, 0)) => {
                             let _ = events.send(SessionEvent::SftpStatus(format!(
                                 "{}: {} ({} {})",
                                 t("下载完成", "Downloaded"),
@@ -740,6 +740,7 @@ async fn list_dirs_only_impl(sftp: &SftpSession, path: &str) -> Result<Vec<(Stri
         .collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_transfer(
     events: &UnboundedSender<SessionEvent>,
     id: &str,
