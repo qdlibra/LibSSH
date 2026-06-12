@@ -1217,9 +1217,9 @@ export component AppWindow inherits Window {
                                 text: b.text;
                                 color: Theme.text-primary;
                                 font-weight: 700;
-                                font-size: b.level <= 1
-                                    ? Theme.fs-lg
-                                    : (b.level == 2 ? Theme.fs-md : Theme.fs-sm);
+                                // H1/H2 → 15px，H3+ → 13px：与 12px 正文拉开层级
+                                // （真实 release notes 基本都用 ## 作主标题）。
+                                font-size: b.level <= 2 ? Theme.fs-lg : Theme.fs-md;
                                 wrap: word-wrap;
                             }
                             if b.kind == "para" : Text {
