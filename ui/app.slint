@@ -1211,6 +1211,9 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         width: parent.visible-width;
                         spacing: 6px;
+                        // 内容不足以填满可视高度时，按自身高度从顶部紧凑排列；
+                        // 否则 Layout 默认 stretch 会把各块均匀拉开（行间距过大）。
+                        alignment: start;
                         for b in root.update-note-blocks : VerticalLayout {
                             // 每块一个 VerticalLayout 容器：只有一个 if 命中，高度自适应。
                             if b.kind == "h" : Text {
