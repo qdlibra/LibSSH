@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "LibSSH"
-version = "0.2.7"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "arboard",
