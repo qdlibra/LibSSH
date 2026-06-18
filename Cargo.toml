@@ -41,6 +41,10 @@ zeroize = "1"
 # Linux Secret Service）。写优先 keyring、失败回退 sessions.json 明文；
 # 读时密码为空才回查 keyring（见 src/secrets.rs 的「无标志位」设计）。
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# app 自管密码加密：机器绑定密钥（HKDF-SHA256）+ XChaCha20-Poly1305 AEAD。
+machine-uid = "0.5"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
 # SOCKS5 proxy tunnelling for SSH/SFTP in network-restricted environments.
 # (HTTP CONNECT proxies are handled in src/proxy.rs without an extra crate.)
 tokio-socks = "0.5"

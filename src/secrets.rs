@@ -77,6 +77,122 @@ pub fn resolve_session_password(session: &mut Session) {
     }
 }
 
+/// 机器绑定的密码加密。密钥 = HKDF-SHA256(机器ID ‖ 内置盐 ‖ 用户名)，
+/// 每次启动派生一次并缓存；密文格式 `enc:v1:base64(nonce[24] ‖ ciphertext)`。
+#[allow(dead_code)]
+mod crypto {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use chacha20poly1305::{
+        aead::{Aead, AeadCore, KeyInit, OsRng},
+        Key, XChaCha20Poly1305, XNonce,
+    };
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+    use std::sync::OnceLock;
+
+    const PREFIX: &str = "enc:v1:";
+    const SALT: &[u8; 16] = b"LibSSH/secret/01";
+
+    fn username() -> String {
+        std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "default".into())
+    }
+
+    fn derive_key() -> Option<Key> {
+        let mid = machine_uid::get().ok()?;
+        let ikm = format!("{mid}:{}", username());
+        let hk = Hkdf::<Sha256>::new(Some(SALT), ikm.as_bytes());
+        let mut okm = [0u8; 32];
+        hk.expand(b"LibSSH-secret-store-v1", &mut okm).ok()?;
+        Some(*Key::from_slice(&okm))
+    }
+
+    fn machine_key() -> Option<&'static Key> {
+        static KEY: OnceLock<Option<Key>> = OnceLock::new();
+        KEY.get_or_init(derive_key).as_ref()
+    }
+
+    fn encrypt_with_key(key: &Key, plain: &str) -> Option<String> {
+        let cipher = XChaCha20Poly1305::new(key);
+        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let ct = cipher.encrypt(&nonce, plain.as_bytes()).ok()?;
+        let mut buf = nonce.to_vec();
+        buf.extend_from_slice(&ct);
+        Some(format!("{PREFIX}{}", STANDARD.encode(buf)))
+    }
+
+    fn decrypt_with_key(key: &Key, token: &str) -> Option<String> {
+        let b64 = token.strip_prefix(PREFIX)?;
+        let buf = STANDARD.decode(b64).ok()?;
+        if buf.len() < 24 {
+            return None;
+        }
+        let (nonce, ct) = buf.split_at(24);
+        let cipher = XChaCha20Poly1305::new(key);
+        let pt = cipher.decrypt(XNonce::from_slice(nonce), ct).ok()?;
+        String::from_utf8(pt).ok()
+    }
+
+    pub fn is_ciphertext(s: &str) -> bool {
+        s.starts_with(PREFIX)
+    }
+
+    pub fn encrypt(plain: &str) -> Option<String> {
+        encrypt_with_key(machine_key()?, plain)
+    }
+
+    pub fn decrypt(token: &str) -> Option<String> {
+        decrypt_with_key(machine_key()?, token)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn test_key() -> Key {
+            *Key::from_slice(&[7u8; 32])
+        }
+
+        #[test]
+        fn round_trip_recovers_plaintext() {
+            let k = test_key();
+            let token = encrypt_with_key(&k, "p@ss w0rd 中文").unwrap();
+            assert!(token.starts_with(PREFIX));
+            assert_eq!(
+                decrypt_with_key(&k, &token).as_deref(),
+                Some("p@ss w0rd 中文")
+            );
+        }
+
+        #[test]
+        fn wrong_key_fails_to_decrypt() {
+            let token = encrypt_with_key(&test_key(), "secret").unwrap();
+            let other = *Key::from_slice(&[9u8; 32]);
+            assert_eq!(decrypt_with_key(&other, &token), None);
+        }
+
+        #[test]
+        fn tampered_ciphertext_returns_none() {
+            let k = test_key();
+            let token = encrypt_with_key(&k, "secret").unwrap();
+            let mut bad = token.clone();
+            bad.pop();
+            bad.push('A');
+            assert_eq!(decrypt_with_key(&k, &bad), None);
+        }
+
+        #[test]
+        fn non_ciphertext_inputs_return_none() {
+            let k = test_key();
+            assert_eq!(decrypt_with_key(&k, ""), None);
+            assert_eq!(decrypt_with_key(&k, "plain-old-password"), None);
+            assert!(!is_ciphertext("plain-old-password"));
+            assert!(is_ciphertext("enc:v1:abc"));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
