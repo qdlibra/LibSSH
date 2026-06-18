@@ -348,7 +348,10 @@ export component SftpPanel inherits Rectangle {
                                    horizontal-alignment: center; vertical-alignment: center; }
                         }
 
-                        for entry[i] in root.entries : row := Rectangle {
+                        // 整体加载(终端 cd 联动 / 路径栏导航 / 刷新，loading-target 为空)时
+                        // 用空 model 隐藏过期文件列表，避免被顶部「Loading...」行整体下推；
+                        // 行内加载(loading-target 指向某目录)仍展示列表以呈现该行 spinner。
+                        for entry[i] in ((root.loading && root.loading-target == "") ? [] : root.entries) : row := Rectangle {
                             height: 24px;
                             background: (row-ta.has-hover || root.selected-index == i)
                                 ? #4a90e225

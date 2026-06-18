@@ -1503,12 +1503,25 @@ fn wire_callbacks(
     });
 
     let scroll_bufs = bufs.clone();
+    // 每个 tab 的滚轮余数累积器（分数行）。满一整行才移动 view_offset，详见
+    // accumulate_scroll_lines。
+    let scroll_accum: Arc<Mutex<HashMap<String, f32>>> = Arc::new(Mutex::new(HashMap::new()));
     let weak = window.as_weak();
-    window.on_terminal_scroll(move |tab_id: SharedString, delta| {
+    window.on_terminal_scroll(move |tab_id: SharedString, delta: f32| {
+        // delta = 分数行 = slint 端「实际滚动像素 / 行高」。累积去抖：不足一整行
+        // (尤其触控板惯性末尾、到顶后边界回弹的亚行反向抖动)只更新余数、不移动
+        // 视图，避免被放大成整行回退；满一行才翻整数行。
+        let lines = {
+            let mut acc = scroll_accum.lock().unwrap();
+            accumulate_scroll_lines(acc.entry(tab_id.to_string()).or_insert(0.0), delta)
+        };
+        if lines == 0 {
+            return;
+        }
         if let Some(buf) = scroll_bufs.lock().unwrap().get_mut(tab_id.as_str()) {
             let max_off = buf.history.len() as i64;
             let cur = buf.view_offset as i64;
-            buf.view_offset = (cur + delta as i64).clamp(0, max_off) as usize;
+            buf.view_offset = (cur + lines).clamp(0, max_off) as usize;
         }
         if let Some(w) = weak.upgrade() {
             rebuild_tab_display(&w, &scroll_bufs, tab_id.as_str());
@@ -3351,6 +3364,20 @@ fn line_has_visible_content(line: &Line) -> bool {
     !line.0.trim_end().is_empty() || !line.1.is_empty()
 }
 
+/// 滚轮去抖累积：把「分数行」增量 `delta_lines` 并入余数 `acc`，返回应滚动的整
+/// 行数（向零截断），余数留在 `acc` 供后续累积。
+///
+/// 目的：消除「上滑到顶后又莫名下跳几行」。触控板惯性滚动末尾、以及到达边界后的
+/// 回弹，会产生方向相反、幅度不足一行的微小 scroll 事件；若每个事件都按符号固定
+/// 翻 ±N 行，这些亚行抖动就被放大成整行回退。改为按真实幅度累积后，亚行反向抖动
+/// 只是抵消余数、不触发滚动。
+fn accumulate_scroll_lines(acc: &mut f32, delta_lines: f32) -> i64 {
+    *acc += delta_lines;
+    let lines = acc.trunc() as i64;
+    *acc -= lines as f32;
+    lines
+}
+
 fn detect_scroll(prev: &[Line], curr: &[Line]) -> usize {
     let mut best_k = 0usize;
     let mut best_len = 0usize;
@@ -3453,6 +3480,14 @@ impl TermBuffer {
             if self.history.len() > MAX_HISTORY {
                 let drop = self.history.len() - MAX_HISTORY;
                 self.history.drain(0..drop);
+            }
+            // 回看历史时(view_offset>0)，新滚出的 k 行进入 history 底部，可视窗口
+            // 必须同步下移 k 行、锚定到同一批历史内容；否则渲染窗口 start 增大、
+            // 整屏向下漂移，最早的命令被挤出视野(滚到顶却看不到顶部命令)。贴底
+            // 实时(view_offset==0)保持不动以跟随最新输出。clamp 到 history.len()
+            // 避免越过最顶(并兼顾 MAX_HISTORY 裁剪后的边界)。
+            if self.view_offset > 0 {
+                self.view_offset = (self.view_offset + k).min(self.history.len());
             }
         }
         self.prev = curr;
@@ -3879,5 +3914,86 @@ mod tests {
         assert!(!settles_sftp_loading(&SessionEvent::SftpStatus(
             "Loading /home...".into()
         )));
+    }
+
+    /// 取渲染结果中最顶行(row==0)的可见文本，按列拼接。
+    fn top_line_text(b: &BuiltScreen) -> String {
+        let mut cells: Vec<(i32, String)> = b
+            .spans
+            .iter()
+            .filter(|sp| sp.row == 0)
+            .map(|sp| (sp.col, sp.text.to_string()))
+            .collect();
+        cells.sort_by_key(|(c, _)| *c);
+        cells
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn scrollback_view_anchors_when_new_output_arrives_while_scrolled_up() {
+        // 回归(bug: 滚到顶仍看不到顶部命令、画面自动下移)：view_offset 是"距底部
+        // 行数"。滚轮拉到顶查看历史时，远端又来新输出会把若干行推入 history 底部；
+        // 若 view_offset 不随之补偿，渲染窗口 start 增大、整屏向下漂移，最早的命令
+        // 被挤出视野。不变量：回看历史时新输出不得移动已锚定的历史视图。
+        let mut buf = TermBuffer {
+            parser: vt100::Parser::new(40, 80, 5000),
+            find_query: String::new(),
+            sel: None,
+            history: Vec::new(),
+            prev: Vec::new(),
+            view_offset: 0,
+            displayed_text: Vec::new(),
+            csi_state: CsiState::Normal,
+        };
+        // 100 行内容(无尾随换行)灌满 40 行屏幕并把 line0.. 推入 history。
+        let mut feed = String::new();
+        for i in 0..100 {
+            if i > 0 {
+                feed.push_str("\r\n");
+            }
+            feed.push_str(&format!("line{i}"));
+        }
+        buf.ingest(feed.as_bytes());
+        assert!(!buf.history.is_empty(), "应已累积 history");
+
+        // 模拟滚轮拉到顶：view_offset = clamp 上界 history.len()。
+        buf.view_offset = buf.history.len();
+        let top_before = top_line_text(&buf.render());
+        assert_eq!(top_before, "line0", "拉到顶应显示最早的一行 line0");
+
+        // 看历史期间远端又产生输出，至少滚动一行。
+        buf.ingest(b"\r\nline100");
+        let top_after = top_line_text(&buf.render());
+
+        assert_eq!(
+            top_after, top_before,
+            "看历史时新输出不得让视图向下漂移：顶部应仍锚定 line0"
+        );
+    }
+
+    #[test]
+    fn scroll_accumulator_ignores_subline_jitter_but_sums_to_whole_lines() {
+        // 回归(bug: 上滑到顶后又莫名下跳三行)：触控板惯性末尾、到顶后边界回弹的
+        // 亚行反向抖动不得移动视图，必须累积满一整行才翻行。
+        let mut acc = 0.0f32;
+        // 亚行正向：不足一行不滚，余数累积。
+        assert_eq!(accumulate_scroll_lines(&mut acc, 0.3), 0);
+        assert_eq!(accumulate_scroll_lines(&mut acc, 0.3), 0);
+        assert_eq!(accumulate_scroll_lines(&mut acc, 0.3), 0); // 累计 ~0.9
+        assert_eq!(accumulate_scroll_lines(&mut acc, 0.3), 1); // ~1.2 → 翻 1 行，余 ~0.2
+
+        // 到顶后(余数≈0)的连串亚行反向抖动：累计仍不足一行 → 绝不回退。
+        let mut top = 0.0f32;
+        assert_eq!(accumulate_scroll_lines(&mut top, -0.2), 0);
+        assert_eq!(accumulate_scroll_lines(&mut top, -0.2), 0);
+        assert_eq!(accumulate_scroll_lines(&mut top, -0.4), 0); // 累计 ~-0.8
+
+        // 鼠标滚轮一格(若干行)一次翻到位。
+        let mut wheel = 0.0f32;
+        assert_eq!(accumulate_scroll_lines(&mut wheel, 3.0), 3);
     }
 }

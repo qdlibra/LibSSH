@@ -261,7 +261,8 @@ export component AppWindow inherits Window {
     // Recompute search highlights for a session's visible screen.
     callback find-query-changed(string /* tab-id */, string /* query */);
     // Scroll a session's scrollback history by N lines (+ = up/older).
-    callback terminal-scroll(string /* tab-id */, int /* delta-lines */);
+    // delta 为「分数行」(实际滚动像素/行高)，Rust 端累积去抖后才翻整行。
+    callback terminal-scroll(string /* tab-id */, float /* delta-lines (fractional) */);
     // Drag-selection lifecycle (grid row/col coordinates).
     callback term-select-start(string /* tab-id */, int /* row */, int /* col */);
     callback term-select-update(string /* tab-id */, int /* row */, int /* col */);

@@ -109,7 +109,7 @@ export component TerminalView inherits Rectangle {
     callback copy-terminal-text();
     callback clear-terminal();              // wipe this session's screen buffer
     callback find-query-changed(string);    // recompute search highlights
-    callback terminal-scroll(int);          // scroll history by N lines (+ = up)
+    callback terminal-scroll(float);        // scroll history by N lines (fractional; + = up/older)
     callback select-start(int, int);        // begin drag-selection at (row, col)
     callback select-update(int, int);       // extend drag-selection to (row, col)
     callback select-end();                  // finish selection → copy to clipboard
@@ -293,11 +293,25 @@ export component TerminalView inherits Rectangle {
             VerticalLayout {
                 spacing: 0;
 
-                flickable := Flickable {
+                // 滚轮不受 Flickable.interactive 影响——Flickable 只要能滚就截走滚轮、
+                // 绝不传给内部子元素。把视口锁成一屏让它无法滚动，滚轮就转发给「父」，
+                // 由这个外层 scroll-catch 接住、驱动 view_offset 翻历史。拖选仍由内层
+                // body-touch 处理（interactive:false 把拖动事件下达给它，不丢多行选择）。
+                scroll-catch := TouchArea {
                     vertical-stretch: 1;
-                    // 关闭 Flickable 自带的拖动滚动手势：否则拖动超过阈值时它会发起
-                    // flicking、抢走指针，使下层 body-touch 的多行拖选 moved 收不到，
-                    // 表现为「只能选中单行」。滚动改由滚轮 scroll-event 驱动，不受影响。
+                    // 传「分数行」= 实际滚动像素 / 行高，由 Rust 端累积去抖：满一整行
+                    // 才翻一行。绝不能用 (delta>0?3:-3) 把任意大小的 delta 量化成固定
+                    // ±3 行——触控板惯性末尾、到顶后的边界回弹会发出亚行级的反向 delta，
+                    // 被放大成整 3 行，表现为「上滑到顶后又莫名下跳三行」。
+                    scroll-event(ev) => {
+                        if (!root.is-alt-screen) {
+                            root.terminal-scroll(ev.delta-y / root.cell-h);
+                        }
+                        accept
+                    }
+                    flickable := Flickable {
+                    width: parent.width;
+                    height: parent.height;
                     interactive: false;
                     viewport-width: self.width;
                     // Alt-screen: lock the viewport to exactly the visible height
@@ -310,9 +324,9 @@ export component TerminalView inherits Rectangle {
                     // intentionally deferred until mouse-up; letting the UI
                     // scrollback grow from stale row coordinates during the drag
                     // leaves large gaps between shell prompts.
-                    viewport-height: root.is-alt-screen || root.sftp-dragging
-                        ? self.height
-                        : max(self.height, 8px + root.rows-used * root.cell-h + 8px);
+                    // 视口锁成可视高 → Flickable 无滚动空间 → 滚轮转发给 scroll-catch。
+                    // 历史回看完全由 view_offset 在 render 内部完成。
+                    viewport-height: self.height;
 
                     // The terminal grid.  Each coloured run is placed with
                     // absolute coordinates derived from its (row, col) and the
@@ -384,13 +398,10 @@ export component TerminalView inherits Rectangle {
                                 }
                             }
                             scroll-event(ev) => {
-                                // Wheel scrolls the scrollback history (~3 lines
-                                // per notch).  Positive delta-y = scroll up = older.
-                                // In alt-screen mode (vim/nano/btop) the program
-                                // handles scroll itself — suppress our history scroll
-                                // so the full-screen UI isn't pushed out of view.
+                                // 与 scroll-catch 一致：传分数行(像素/行高)，Rust 累积去抖。
+                                // alt-screen(vim/nano/btop)下程序自管滚动，抑制历史滚动。
                                 if (!root.is-alt-screen) {
-                                    root.terminal-scroll(ev.delta-y > 0 ? 3 : -3);
+                                    root.terminal-scroll(ev.delta-y / root.cell-h);
                                 }
                                 accept
                             }
@@ -439,13 +450,17 @@ export component TerminalView inherits Rectangle {
                         }
 
                         // Blinking block cursor (overlay, decoupled from text).
+                        // cursor-row < 0 表示正在回看历史(render 在 view_offset>0 时
+                        // 返回 cursor_row=-1)：此时光标不应跟随、更不该停在顶部
+                        // (y = -1*cell_h) 闪烁，必须隐藏。
                         Rectangle {
                             x: root.cursor-col * root.cell-w;
                             y: root.cursor-row * root.cell-h;
                             width: root.cell-w;
                             height: root.cell-h;
                             background: Theme.term-fg;
-                            visible: ime-input.has-focus && key-capture.cursor-blink;
+                            visible: ime-input.has-focus && key-capture.cursor-blink
+                                && root.cursor-row >= 0;
                         }
 
                         // --- Right-click context menu ---------------------
@@ -484,6 +499,7 @@ export component TerminalView inherits Rectangle {
                             }
                         }
                     }
+                }
                 }
 
                 // Bottom focus-recovery / middle-click-paste strip
