@@ -3275,7 +3275,18 @@ fn cell_attrs(
                 std::mem::swap(&mut fg, &mut bg);
             }
             let s = cell.contents();
-            let s = if s.is_empty() { " ".to_string() } else { s };
+            // 宽字符（CJK 全角字符）在 vt100 网格里占两格：第 1 格存字符本身，
+            // 第 2 格是「延续格」，其 contents() 为空字符串。延续格不是真正的空白
+            // 单元格——前一格的全角字形已经覆盖了这两格的宽度。若把它补成半角
+            // 空格，每个汉字后就会多出一个空格，终端里中文字间距被撑大、复制出来
+            // 的文本也夹带空格。只有真正的空白格才补空格，以维持等宽网格对齐。
+            let s = if cell.is_wide_continuation() {
+                String::new()
+            } else if s.is_empty() {
+                " ".to_string()
+            } else {
+                s
+            };
             (s, fg, bg, cell.bold())
         }
         None => (
@@ -3587,6 +3598,24 @@ fn idx_to_rgb(i: u8, bold: bool) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wide_chars_render_without_padding_spaces() {
+        // 中文（CJK 全角字符）在 vt100 网格里占两格：第 1 格存字符本身，第 2 格
+        // 是「宽字符延续格」，其 contents() 为空字符串。该延续格不能被补成半角
+        // 空格，否则每个汉字后会多出一个空格——终端里中文字间距被撑大，复制出来
+        // 的文本也夹带空格。
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process("中文ab".as_bytes());
+        let screen = parser.screen();
+        let (plain, runs) = build_row(screen, 0, 80);
+        assert_eq!(plain.trim_end(), "中文ab", "宽字符之间不应插入空格");
+        assert_eq!(
+            runs[0].text.trim_end(),
+            "中文ab",
+            "合并后的文字段不应夹带空格"
+        );
+    }
 
     #[test]
     fn auto_reconnect_backoff_caps_at_three_attempts() {

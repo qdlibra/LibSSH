@@ -443,7 +443,16 @@ async fn run_session(
     )));
 
     let config = Arc::new(client::Config {
+        // 兜底：完全无活动 10 分钟则断开（监控流通常持续喂活，实际主要靠下面的
+        // keepalive 主动探测）。
         inactivity_timeout: Some(std::time::Duration::from_secs(60 * 10)),
+        // 应用层心跳：每 60s 发一次 SSH keepalive（keepalive@openssh.com）。
+        // 断网 / 电脑休眠唤醒后 TCP 可能已半开——既不再有数据、也收不到 FIN，
+        // channel.wait() 会永久挂起、UI 状态卡在「已连接」。keepalive 主动探测，
+        // 连续 keepalive_max 次无响应即判定断开，russh 关闭会话 → channel.wait()
+        // 返回 → 走 Closed 流程把状态改为「已断开」（并按既有逻辑自动重连）。
+        keepalive_interval: Some(std::time::Duration::from_secs(60)),
+        keepalive_max: 3,
         ..<_>::default()
     });
     let handler = ClientHandler {};
@@ -786,6 +795,8 @@ const ECHO_SCAN_BUDGET: usize = 8192;
 enum EchoSuppressorState {
     Idle,
     Scanning,
+    // 命中命令回显后、还差吞掉那一个命令换行的 LF（CRLF 被切到下一包时停在这里等）。
+    FoldNewline,
     Done,
 }
 
@@ -815,18 +826,23 @@ impl EchoSuppressor {
     }
 
     fn feed(&mut self, chunk: String) -> String {
-        if self.state != EchoSuppressorState::Scanning {
-            return chunk;
+        match self.state {
+            EchoSuppressorState::Idle | EchoSuppressorState::Done => return chunk,
+            // 命中命令后，吞掉命令换行残留的 LF（CRLF 被切到下一包的情况）。
+            EchoSuppressorState::FoldNewline => return self.fold_newline(chunk),
+            EchoSuppressorState::Scanning => {}
         }
         self.seen += chunk.len();
         self.held.push_str(&chunk);
 
         if let Some(pos) = self.held.find(PROMPT_SETUP_TEXT) {
-            self.state = EchoSuppressorState::Done;
-            let mut out = String::with_capacity(self.held.len() - PROMPT_SETUP_TEXT.len());
-            out.push_str(&self.held[..pos]);
-            out.push_str(&self.held[pos + PROMPT_SETUP_TEXT.len()..]);
+            let mut out = self.held[..pos].to_string();
+            let after = self.held[pos + PROMPT_SETUP_TEXT.len()..].to_string();
             self.held.clear();
+            // 删掉命令文本后，再吞掉命令回车换行里的 LF（保留 CR）：bash 执行注入
+            // 命令后会重绘一个新提示符，保留 CR 让它回到命令行行首覆盖旧提示符，
+            // 终端里就不会多出一行提示符（修复「连接后自动换行一次」）。
+            out.push_str(&self.fold_newline(after));
             return out;
         }
 
@@ -839,6 +855,24 @@ impl EchoSuppressor {
         let keep = longest_overlap(self.held.as_bytes(), PROMPT_SETUP_TEXT.as_bytes());
         let rest = self.held.split_off(self.held.len() - keep);
         std::mem::replace(&mut self.held, rest)
+    }
+
+    /// 吞掉 chunk 中第一个 LF（注入命令的回车换行）并完成抑制；CRLF 被切到下一包
+    /// （本包还没出现 LF）时停在 FoldNewline 等下一包。CR 不动——它把光标带回命令
+    /// 行行首，让命令执行后重绘的新提示符覆盖旧提示符，终端里只留一行提示符。
+    fn fold_newline(&mut self, chunk: String) -> String {
+        match chunk.find('\n') {
+            Some(i) => {
+                self.state = EchoSuppressorState::Done;
+                let mut out = chunk[..i].to_string();
+                out.push_str(&chunk[i + 1..]);
+                out
+            }
+            None => {
+                self.state = EchoSuppressorState::FoldNewline;
+                chunk
+            }
+        }
     }
 }
 
@@ -921,7 +955,33 @@ mod tests {
         let mut s = EchoSuppressor::new();
         s.arm();
         let out = s.feed(format!("user@host:~$ {PROMPT_SETUP_TEXT}\r\nrest"));
-        assert_eq!(out, "user@host:~$ \r\nrest");
+        // 删命令文本 + 吞掉命令换行的 LF（保留 CR）→ 新提示符回行首覆盖旧提示符。
+        assert_eq!(out, "user@host:~$ \rrest");
+    }
+
+    #[test]
+    fn echo_suppressor_folds_prompt_redraw_into_single_line() {
+        // 完整复现连接后的注入序列：提示符 P1 + 注入命令 + 回车(CRLF) +
+        // OSC7（PROMPT_COMMAND 首次执行）+ 重绘提示符 P2。抑制后应删命令文本、
+        // 吞掉命令换行的 LF、只留 CR —— P2 回行首覆盖 P1，终端只剩一行提示符。
+        let mut s = EchoSuppressor::new();
+        s.arm();
+        let osc7 = "\x1b]7;file://host/home\x07";
+        let out = s.feed(format!(
+            "ubuntu@LD:~$ {PROMPT_SETUP_TEXT}\r\n{osc7}ubuntu@LD:~$ "
+        ));
+        assert_eq!(out, format!("ubuntu@LD:~$ \r{osc7}ubuntu@LD:~$ "));
+    }
+
+    #[test]
+    fn echo_suppressor_folds_newline_split_after_command() {
+        // 命令文本落在包尾、CRLF 在下一包：仍要吞掉 LF（保留 CR）。
+        let mut s = EchoSuppressor::new();
+        s.arm();
+        let mut out = String::new();
+        out.push_str(&s.feed(format!("ubuntu@LD:~$ {PROMPT_SETUP_TEXT}")));
+        out.push_str(&s.feed("\r\nubuntu@LD:~$ ".to_string()));
+        assert_eq!(out, "ubuntu@LD:~$ \rubuntu@LD:~$ ");
     }
 
     #[test]
@@ -935,7 +995,7 @@ mod tests {
         out.push_str(&s.feed(a.to_string()));
         out.push_str(&s.feed(b.to_string()));
         out.push_str(&s.feed(c.to_string()));
-        assert_eq!(out, "user@host:~$ \r\n");
+        assert_eq!(out, "user@host:~$ \r");
     }
 
     #[test]
@@ -943,7 +1003,7 @@ mod tests {
         let mut s = EchoSuppressor::new();
         s.arm();
         let out = s.feed(format!("欢迎使用{PROMPT_SETUP_TEXT}\r\n"));
-        assert_eq!(out, "欢迎使用\r\n");
+        assert_eq!(out, "欢迎使用\r");
     }
 
     #[test]
