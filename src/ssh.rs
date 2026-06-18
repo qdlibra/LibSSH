@@ -784,8 +784,13 @@ fn parse_net_dev_line(line: &str) -> Option<(String, (u64, u64))> {
     Some((iface.to_string(), (nums[0], nums[8])))
 }
 
-/// 行首空格：远端 shell 启用 HISTCONTROL=ignorespace/ignoreboth 时不记入 history。
-const PROMPT_SETUP_TEXT: &str = " export PROMPT_COMMAND='printf \"\\033]7;file://${HOSTNAME}${PWD}\\007\"' && eval \"$PROMPT_COMMAND\"";
+/// 注入 cwd 上报：定义 `__lcwd` 发 OSC7（`file://HOST/PWD`），并同时挂到 bash 的
+/// `PROMPT_COMMAND` 与 zsh 的 `precmd_functions` —— 两种 shell 都能在每次提示符
+/// （含 `cd` 后）上报当前目录，末尾立即调用一次上报初始目录。bash 下
+/// `precmd_functions+=` 只是建个无用数组（`2>/dev/null` 兜底），zsh 下
+/// `PROMPT_COMMAND` 只是未使用的变量；互不干扰。fish 等非 POSIX shell 不支持。
+/// 行首空格：远端启用 HISTCONTROL=ignorespace/ignoreboth 时不记入 history。
+const PROMPT_SETUP_TEXT: &str = " __lcwd(){ printf \"\\033]7;file://%s%s\\007\" \"$HOSTNAME\" \"$PWD\"; }; PROMPT_COMMAND=\"__lcwd;$PROMPT_COMMAND\"; precmd_functions+=(__lcwd) 2>/dev/null; __lcwd";
 
 /// 注入命令的回显最迟应出现在其后几个输出包内；超过该字节数仍未命中
 /// 说明回显被远端改写（如 zsh 语法高亮插件），放弃过滤、降级为可见。
@@ -1011,9 +1016,9 @@ mod tests {
         let mut s = EchoSuppressor::new();
         s.arm();
         // 尾部恰好像命令开头 → 暂扣等下一包
-        assert_eq!(s.feed("foo export PROMPT".to_string()), "foo");
+        assert_eq!(s.feed("foo __lcwd".to_string()), "foo");
         // 下一包证明不是回显 → 原样补出
-        assert_eq!(s.feed("_X bar".to_string()), " export PROMPT_X bar");
+        assert_eq!(s.feed("Z bar".to_string()), " __lcwdZ bar");
     }
 
     #[test]
