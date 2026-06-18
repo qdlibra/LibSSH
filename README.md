@@ -1,5 +1,7 @@
 # LibSSH
 
+> 🙏 致谢：感谢开源项目 [meatshell](https://github.com/jeff141/meatshell) 的作者提供的开源项目。LibSSH 是参考 meatshell 作者的思路进行复刻的 AI SSH 版本 Shell 工具。
+
 LibSSH 是一个使用 Rust + Slint 编写的轻量级 SSH / SFTP 桌面客户端，目标是提供接近 FinalShell 的本地体验：会话管理、标签页终端、SFTP 文件面板、远端文本编辑、系统资源侧栏、快捷命令和自动更新。
 
 项目还内置了一个受策略保护的 `LibSSH skill ...` CLI，供 Codex、Claude Code 等 AI 编程工具在用户授权后安全地操作已保存的远程主机。CLI 与 GUI 共用同一个二进制，凭据始终由 LibSSH 本地读取和脱敏输出。
@@ -506,7 +508,7 @@ Release workflow 支持三种触发方式：
 手动发版示例：
 
 ```bash
-git tag v0.2.8 && git push origin v0.2.8
+git tag v0.2.13 && git push origin v0.2.13
 ```
 
 或仅更新 `Cargo.toml` 的版本号后推送到 `main`，由 workflow 自动创建 tag。
