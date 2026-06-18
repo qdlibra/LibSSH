@@ -1,85 +1,85 @@
-//! 系统凭据库里的会话密码。「无标志位」设计：
+//! 会话密码的机器绑定加密存储（替代系统钥匙串）。
 //!
-//! - 写 → 先试 keyring，成功则 sessions.json 落空串；失败回退明文（旧行为）。
-//! - 读 → `Session.password` 为空才回查 keyring（查不到就当真没有）。
-//! - 迁移 → 启动时把 json 里的明文逐条搬进 keyring，成功一条清一条，
-//!   失败立即停（剩余明文保留，下次启动重试）。幂等、自愈、无状态机：
-//!   即使迁移中途断电，也不存在「密码已清空但没存进 keyring」的窗口。
-
-use anyhow::{Context, Result};
+//! - 密文格式 `enc:v1:…` 直接存在 `Session.password`，随 sessions.json 落盘。
+//! - 保存会话时 `encrypt_password` 把明文加密成密文；连接前
+//!   `resolve_session_password` 把密文原地解密成明文。
+//! - 首次启动 `migrate_passwords` 把旧 keyring / 旧明文搬成密文，成功即删旧
+//!   keyring 条目；失败保留原状下次重试。幂等、自愈。
+//! - 加密失败时绝不明文落盘：宁可不持久化，连接时要求现场输入。
 
 use crate::config::{AuthMethod, Secret, Session};
 
 const SERVICE: &str = "LibSSH";
 
-fn entry(session_id: &str) -> Result<keyring::Entry> {
-    keyring::Entry::new(SERVICE, &format!("session:{session_id}")).context("open keyring entry")
+/// 明文 → `enc:v1:…` 密文；机器 ID 不可得或加密失败返回 None（上层据此不持久化）。
+pub fn encrypt_password(plain: &str) -> Option<String> {
+    crypto::encrypt(plain)
 }
 
-pub fn store_password(session_id: &str, password: &str) -> Result<()> {
-    entry(session_id)?
-        .set_password(password)
-        .context("keyring set_password")
-}
-
-pub fn load_password(session_id: &str) -> Option<String> {
-    match entry(session_id).ok()?.get_password() {
-        Ok(p) => Some(p),
-        Err(keyring::Error::NoEntry) => None,
-        Err(e) => {
-            tracing::warn!("keyring get_password failed: {e}");
-            None
+/// 连接前解析密码：`password` 为密文则原地解密成明文（仅密码认证需要）。
+/// 空串、旧明文残留、解密失败都保持原样。
+pub fn resolve_session_password(session: &mut Session) {
+    if session.auth == AuthMethod::Password && crypto::is_ciphertext(session.password.as_str()) {
+        if let Some(plain) = crypto::decrypt(session.password.as_str()) {
+            session.password = Secret::new(plain);
         }
     }
 }
 
-pub fn delete_password(session_id: &str) {
-    if let Ok(entry) = entry(session_id) {
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(e) => tracing::warn!("keyring delete failed: {e}"),
-        }
+/// 读取旧 keyring 条目（仅迁移用）。不存在返回 None。
+pub fn keyring_read(session_id: &str) -> Option<String> {
+    let entry = keyring::Entry::new(SERVICE, &format!("session:{session_id}")).ok()?;
+    entry.get_password().ok()
+}
+
+/// 删除旧 keyring 条目（迁移后、或删除会话时清理残留）。不存在则忽略。
+pub fn keyring_delete(session_id: &str) {
+    if let Ok(entry) = keyring::Entry::new(SERVICE, &format!("session:{session_id}")) {
+        let _ = entry.delete_credential();
     }
 }
 
-/// 把仍以明文存放的密码搬进凭据库，返回迁移条数。
-/// `write` 注入便于单测；第一次失败立即停止并保留剩余明文。
-pub fn migrate_plaintext_passwords(
+/// 把旧明文 / 旧 keyring 密码搬成密文，返回迁移条数。幂等：已是密文 / 空且
+/// keyring 无值 / 非密码认证一律跳过。`read_keyring` / `delete_keyring` 注入
+/// 便于单测。加密失败的条目原样保留（不删 keyring、不动明文），下次重试。
+pub fn migrate_passwords(
     sessions: &mut [Session],
-    mut write: impl FnMut(&str, &str) -> Result<()>,
+    read_keyring: impl Fn(&str) -> Option<String>,
+    delete_keyring: impl Fn(&str),
 ) -> usize {
     let mut moved = 0;
     for s in sessions.iter_mut() {
-        if s.password.as_str().is_empty() {
+        if s.auth != AuthMethod::Password {
             continue;
         }
-        match write(&s.id, s.password.as_str()) {
-            Ok(()) => {
-                s.password = Secret::default();
+        let raw = s.password.as_str();
+        if crypto::is_ciphertext(raw) {
+            continue; // 已迁移
+        }
+        // 非空 = 旧明文；空 = 回查 keyring。
+        let from_keyring = raw.is_empty();
+        let plain = if from_keyring {
+            read_keyring(&s.id)
+        } else {
+            Some(raw.to_string())
+        };
+        let Some(plain) = plain else { continue };
+        match crypto::encrypt(&plain) {
+            Some(token) => {
+                s.password = Secret::new(token);
+                if from_keyring {
+                    delete_keyring(&s.id);
+                }
                 moved += 1;
             }
-            Err(e) => {
-                tracing::warn!("password migration stopped: {e:#}");
-                break;
-            }
+            None => continue, // 加密不可用：保留原状，下次启动重试
         }
     }
     moved
 }
 
-/// 连接前解析会话密码：json 明文优先（迁移失败的回退场景），
-/// 否则回查 keyring。仅密码认证需要。
-pub fn resolve_session_password(session: &mut Session) {
-    if session.auth == AuthMethod::Password && session.password.as_str().is_empty() {
-        if let Some(p) = load_password(&session.id) {
-            session.password = Secret::new(p);
-        }
-    }
-}
-
 /// 机器绑定的密码加密。密钥 = HKDF-SHA256(机器ID ‖ 内置盐 ‖ 用户名)，
 /// 每次启动派生一次并缓存；密文格式 `enc:v1:base64(nonce[24] ‖ ciphertext)`。
-#[allow(dead_code)]
 mod crypto {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use chacha20poly1305::{
@@ -197,65 +197,49 @@ mod crypto {
 mod tests {
     use super::*;
 
-    fn session_with_pwd(id: &str, pwd: &str) -> Session {
+    fn pwd_session(id: &str, pwd: &str) -> Session {
         let mut s = Session::new_empty();
         s.id = id.into();
+        s.auth = AuthMethod::Password;
         s.password = Secret::new(pwd);
         s
     }
 
     #[test]
-    fn migration_moves_plaintext_and_clears_json_copies() {
-        let mut sessions = vec![
-            session_with_pwd("a", "pa"),
-            session_with_pwd("b", ""),
-            session_with_pwd("c", "pc"),
-        ];
-        let mut stored: Vec<(String, String)> = Vec::new();
-        let moved = migrate_plaintext_passwords(&mut sessions, |id, pwd| {
-            stored.push((id.to_string(), pwd.to_string()));
-            Ok(())
-        });
-        assert_eq!(moved, 2);
+    fn migrates_plaintext_to_ciphertext() {
+        let mut sessions = vec![pwd_session("a", "plain-pw")];
+        let moved = migrate_passwords(&mut sessions, |_| None, |_| {});
+        assert_eq!(moved, 1);
+        assert!(crypto::is_ciphertext(sessions[0].password.as_str()));
         assert_eq!(
-            stored,
-            vec![("a".into(), "pa".into()), ("c".into(), "pc".into())]
+            crypto::decrypt(sessions[0].password.as_str()).as_deref(),
+            Some("plain-pw")
         );
-        assert!(sessions.iter().all(|s| s.password.as_str().is_empty()));
     }
 
     #[test]
-    fn migration_failure_keeps_remaining_plaintext_untouched() {
-        // 写入失败：明文必须原样保留 —— 绝不能清掉没存进凭据库的密码。
-        let mut sessions = vec![session_with_pwd("x", "px"), session_with_pwd("y", "py")];
-        let mut calls = 0;
-        let moved = migrate_plaintext_passwords(&mut sessions, |_, _| {
-            calls += 1;
-            anyhow::bail!("no backend")
-        });
+    fn migrates_keyring_password_and_deletes_entry() {
+        let mut sessions = vec![pwd_session("b", "")];
+        let deleted = std::cell::RefCell::new(Vec::new());
+        let moved = migrate_passwords(
+            &mut sessions,
+            |id| (id == "b").then(|| "from-keyring".to_string()),
+            |id| deleted.borrow_mut().push(id.to_string()),
+        );
+        assert_eq!(moved, 1);
+        assert_eq!(
+            crypto::decrypt(sessions[0].password.as_str()).as_deref(),
+            Some("from-keyring")
+        );
+        assert_eq!(*deleted.borrow(), vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn migration_is_idempotent_on_ciphertext() {
+        let token = crypto::encrypt("x").unwrap();
+        let mut sessions = vec![pwd_session("c", &token)];
+        let moved = migrate_passwords(&mut sessions, |_| panic!("不应回查 keyring"), |_| {});
         assert_eq!(moved, 0);
-        assert_eq!(calls, 1, "首败即停，不再骚扰后续条目");
-        assert_eq!(sessions[0].password.as_str(), "px");
-        assert_eq!(sessions[1].password.as_str(), "py");
-    }
-
-    #[test]
-    fn migration_is_idempotent_on_already_empty_passwords() {
-        let mut sessions = vec![session_with_pwd("a", "")];
-        let moved =
-            migrate_plaintext_passwords(&mut sessions, |_, _| panic!("不应为已空密码调用写入"));
-        assert_eq!(moved, 0);
-    }
-
-    /// 触碰真实系统凭据库的冒烟测试：`cargo test real_keyring -- --ignored`。
-    /// macOS 上首次运行可能弹钥匙串授权框，CI / 常规 cargo test 不跑。
-    #[test]
-    #[ignore = "touches the real OS keychain; run manually"]
-    fn real_keyring_round_trip() {
-        let id = format!("smoke-{}", std::process::id());
-        store_password(&id, "p@ss").unwrap();
-        assert_eq!(load_password(&id).as_deref(), Some("p@ss"));
-        delete_password(&id);
-        assert_eq!(load_password(&id), None);
+        assert_eq!(sessions[0].password.as_str(), token);
     }
 }

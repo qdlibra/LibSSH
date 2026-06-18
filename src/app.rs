@@ -86,18 +86,20 @@ pub fn run(log_buffer: crate::logbuf::LogBuffer) -> anyhow::Result<()> {
     let store = Rc::new(RefCell::new(ConfigStore::load()?));
     crate::i18n::set_language(store.borrow().language());
 
-    // 启动迁移：把 sessions.json 里的明文密码搬进系统凭据库（幂等，
-    // keyring 不可用时首败即停、明文保留，下次启动重试）。
+    // 启动迁移：把旧明文 / 旧 keyring 里的密码搬成机器绑定密文（幂等；
+    // keyring 读取在 macOS 上可能一次性弹授权，点「允许」，迁移完即删条目）。
     {
         let mut s = store.borrow_mut();
-        let moved = crate::secrets::migrate_plaintext_passwords(s.sessions_mut(), |id, pwd| {
-            crate::secrets::store_password(id, pwd)
-        });
+        let moved = crate::secrets::migrate_passwords(
+            s.sessions_mut(),
+            crate::secrets::keyring_read,
+            crate::secrets::keyring_delete,
+        );
         if moved > 0 {
             if let Err(e) = s.save() {
                 tracing::warn!("save after password migration failed: {e:#}");
             } else {
-                tracing::info!("migrated {moved} session password(s) into the OS keyring");
+                tracing::info!("migrated {moved} session password(s) to encrypted store");
             }
         }
     }
@@ -844,7 +846,7 @@ fn wire_callbacks(
                 tracing::warn!("failed to save config: {err:#}");
             }
         }
-        crate::secrets::delete_password(id.as_ref());
+        crate::secrets::keyring_delete(id.as_ref());
         sync_sessions_to_model(&remove_store.borrow(), &remove_sessions);
         if let Some(w) = weak.upgrade() {
             let _ = w.get_sessions();
@@ -890,14 +892,15 @@ fn wire_callbacks(
             proxy: String::new(),
             last_used: None,
         };
-        // 新输入的密码优先进系统凭据库；成功则 json 落空串，失败保持明文
-        // （与旧版行为一致）。未改密码（draft 为空）时沿用上面取出的旧值，
-        // 不碰 keyring。
-        if !draft.password.is_empty()
-            && crate::secrets::store_password(&new_session.id, new_session.password.as_str())
-                .is_ok()
-        {
+        // 「记住」开关决定是否持久化：不记住→清空；记住+新输入明文→加密成
+        // enc:v1: 密文（加密不可用则不持久化，绝不明文落盘）；记住+未改密码
+        //（draft 为空）→沿用上面取出的旧密文，不动。
+        if !draft.remember {
             new_session.password = Secret::default();
+        } else if !draft.password.is_empty() {
+            new_session.password = crate::secrets::encrypt_password(new_session.password.as_str())
+                .map(Secret::new)
+                .unwrap_or_default();
         }
         {
             let mut s = submit_store.borrow_mut();
