@@ -295,6 +295,10 @@ export component TerminalView inherits Rectangle {
 
                 flickable := Flickable {
                     vertical-stretch: 1;
+                    // 关闭 Flickable 自带的拖动滚动手势：否则拖动超过阈值时它会发起
+                    // flicking、抢走指针，使下层 body-touch 的多行拖选 moved 收不到，
+                    // 表现为「只能选中单行」。滚动改由滚轮 scroll-event 驱动，不受影响。
+                    interactive: false;
                     viewport-width: self.width;
                     // Alt-screen: lock the viewport to exactly the visible height
                     // so the full-screen program (nano/vim) renders top-aligned
