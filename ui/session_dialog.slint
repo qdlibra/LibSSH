@@ -10,6 +10,7 @@ export struct SessionDraft {
     auth: string,      // "password" | "key"
     password: string,
     private-key-path: string,
+    remember: bool,    // 勾选则把密码机器绑定加密存本地
 }
 
 // Modal dialog for creating / editing an SSH session.
@@ -25,6 +26,7 @@ export component SessionDialog inherits Rectangle {
     in-out property <string> draft-user: "root";
     in-out property <string> draft-auth: "password";
     in-out property <string> draft-password;
+    in-out property <bool> draft-remember: true;
     in-out property <string> draft-key-path;
     // Connectivity test state, driven from Rust: "idle" | "testing" | "ok" | "fail"
     in-out property <string> test-status: "idle";
@@ -34,6 +36,9 @@ export component SessionDialog inherits Rectangle {
     callback cancel();
     callback pick-key-file();   // open a native file picker for the private key
     callback test-connection(SessionDraft);  // probe the server with the current draft
+
+    // 每次打开对话框时默认勾选「记住密码」；用户可手动取消。
+    changed is-open => { if (self.is-open) { root.draft-remember = true; } }
 
     visible: is-open;
     background: #000000aa;
@@ -158,6 +163,34 @@ export component SessionDialog inherits Rectangle {
                 value <=> root.draft-password;
             }
 
+            if root.draft-auth == "password" : HorizontalLayout {
+                spacing: 8px;
+                Rectangle {
+                    width: 18px; height: 18px;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: root.draft-remember ? Theme.accent : Theme.border-subtle;
+                    background: root.draft-remember ? Theme.accent : Theme.bg-root;
+                    Text {
+                        text: root.draft-remember ? "✓" : "";
+                        color: white;
+                        font-size: Theme.fs-sm;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.draft-remember = !root.draft-remember; }
+                    }
+                }
+                Text {
+                    text: @tr("Remember password (encrypted on this machine)");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                    vertical-alignment: center;
+                }
+            }
+
             if root.draft-auth == "key" : VerticalLayout {
                 spacing: 4px;
                 Text {
@@ -248,6 +281,7 @@ export component SessionDialog inherits Rectangle {
                                 auth: root.draft-auth,
                                 password: root.draft-password,
                                 private-key-path: root.draft-key-path,
+                                remember: root.draft-remember,
                             });
                         }
                     }
@@ -269,6 +303,7 @@ export component SessionDialog inherits Rectangle {
                             auth: root.draft-auth,
                             password: root.draft-password,
                             private-key-path: root.draft-key-path,
+                            remember: root.draft-remember,
                         });
                     }
                 }
