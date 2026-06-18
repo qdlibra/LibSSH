@@ -2819,10 +2819,19 @@ fn apply_session_event_to_window(
         }
         SessionEvent::SftpStatus(msg) => {
             update_terminal(&|t| t.sftp_status = msg.clone().into());
-            // 编辑器保存成功时（状态以"已保存/Saved"开头）清除脏标记并回显到编辑器状态行。
-            if win.get_editor_open() && msg.starts_with(crate::i18n::t("已保存", "Saved")) {
-                win.set_editor_dirty(false);
-                win.set_editor_status(msg.clone().into());
+            // 编辑器保存结果：成功（"已保存/Saved"开头）→ 关闭编辑器，回到文件管理器；
+            // 底部状态行已回显"已保存: <文件名>"作为成功提示。失败（"保存失败/Save
+            // failed"开头）→ 留在编辑器并把错误回显到状态行，便于用户重试。
+            if win.get_editor_open() {
+                if msg.starts_with(crate::i18n::t("已保存", "Saved")) {
+                    win.set_editor_dirty(false);
+                    win.set_editor_confirm_discard(false);
+                    win.set_editor_content("".into());
+                    win.set_editor_status("".into());
+                    win.set_editor_open(false);
+                } else if msg.starts_with(crate::i18n::t("保存失败", "Save failed")) {
+                    win.set_editor_status(msg.clone().into());
+                }
             }
         }
         SessionEvent::SftpFileContent {

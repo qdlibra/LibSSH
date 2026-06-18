@@ -72,7 +72,7 @@ export component SftpPanel inherits Rectangle {
 
     // -----------------------------------------------------------------------
     property <string> path-draft: current-path;
-    changed current-path => { root.path-draft = root.current-path; }
+    changed current-path => { root.path-draft = root.current-path; root.selected-index = -1; }
 
     // 行内加载指示：双击 / 右键「打开」某个目录后记下目标路径，该行的文件夹
     // 图标前展开一个旋转动画。加载终结时 Rust 侧统一复位 `loading`（成功
@@ -82,6 +82,10 @@ export component SftpPanel inherits Rectangle {
 
     // 目录树宽度（分隔把手左右拖动调整）。
     in-out property <length> tree-width: 160px;
+
+    // 选中行：右键或单击高亮，-1 表示无选中。右键弹菜单时 hover 会转移到
+    // 菜单上、行 has-hover 变 false，靠这个状态保持蓝色高亮不丢。
+    property <int> selected-index: -1;
 
     // --- 名称输入对话框（重命名 / 新建文件 / 新建文件夹共用） --------------
     property <bool> name-dialog-open: false;
@@ -346,7 +350,7 @@ export component SftpPanel inherits Rectangle {
 
                         for entry[i] in root.entries : row := Rectangle {
                             height: 24px;
-                            background: row-ta.has-hover
+                            background: (row-ta.has-hover || root.selected-index == i)
                                 ? #4a90e225
                                 : (mod(i, 2) == 0 ? transparent : #ffffff08);
 
@@ -356,6 +360,7 @@ export component SftpPanel inherits Rectangle {
 
                             row-ta := TouchArea {
                                 mouse-cursor: pointer;
+                                clicked => { root.selected-index = i; }
                                 double-clicked => {
                                     if (entry.is-dir) {
                                         root.loading-target = entry.full-path;
@@ -367,6 +372,7 @@ export component SftpPanel inherits Rectangle {
                                 pointer-event(ev) => {
                                     if (ev.kind == PointerEventKind.down
                                             && ev.button == PointerEventButton.right) {
+                                        root.selected-index = i;
                                         row.mx = self.mouse-x;
                                         row.my = self.mouse-y;
                                         row-menu.show();
@@ -501,6 +507,7 @@ export component SftpPanel inherits Rectangle {
                                 pointer-event(ev) => {
                                     if (ev.kind == PointerEventKind.down
                                             && ev.button == PointerEventButton.right) {
+                                        root.selected-index = -1;
                                         blank-zone.bx = self.mouse-x;
                                         blank-zone.by = self.mouse-y;
                                         blank-menu.show();
