@@ -3828,6 +3828,31 @@ mod tests {
     }
 
     #[test]
+    fn ingest_large_scrolling_output_accumulates_history() {
+        // 100 行输出到 40 行屏幕：约 60 行应滚入 history（复现「只能往上滚几行」）。
+        let mut buf = TermBuffer {
+            parser: vt100::Parser::new(40, 80, 5000),
+            find_query: String::new(),
+            sel: None,
+            history: Vec::new(),
+            prev: Vec::new(),
+            view_offset: 0,
+            displayed_text: Vec::new(),
+            csi_state: CsiState::Normal,
+        };
+        let mut feed = Vec::new();
+        for i in 0..100 {
+            feed.extend_from_slice(format!("line{i}\r\n").as_bytes());
+        }
+        buf.ingest(&feed);
+        assert!(
+            buf.history.len() >= 55,
+            "history only accumulated {} lines (expected ~60)",
+            buf.history.len()
+        );
+    }
+
+    #[test]
     fn sftp_follows_terminal_cwd_only_when_not_manually_navigated() {
         // 自动模式：终端 cd 应驱动 SFTP 面板跟随（置 loading 并重新列目录）。
         assert!(sftp_should_follow_cwd(false));
