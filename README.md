@@ -29,7 +29,7 @@ LibSSH 是一个使用 Rust + Slint 编写的轻量级 SSH / SFTP 桌面客户�
 - 异步运行时：Tokio
 - 终端解析：`vt100`
 - 配置与持久化：`serde` / `serde_json` / `directories`
-- 系统凭据库：`keyring`
+- 密码加密：`chacha20poly1305` / `hkdf` / `machine-uid`（`keyring` 仅用于迁移旧密码）
 - 自动更新：`reqwest` + `semver` + `sha2`
 
 ## 快速开始
@@ -146,13 +146,11 @@ LibSSH 使用 `directories::ProjectDirs` 计算用户配置目录，并将主要
 - 自动更新设置
 - 快捷命令
 
-密码优先存入系统凭据库：
+密码默认**机器绑定加密**后存入配置文件（`enc:v1:…` 密文，密钥由本机特征经 HKDF-SHA256 派生、XChaCha20-Poly1305 加密），连接时本地解密，无需系统钥匙串、零授权弹窗。会话对话框可勾选 / 取消「记住密码」。从旧版升级时，原存于系统钥匙串或明文的密码会在首次启动自动迁移为加密存储。
 
-- macOS Keychain
-- Windows Credential Manager
-- Linux Secret Service
+> 安全边界：机器绑定加密能挡住「配置文件被拷到另一台机器 / 另一个账户」，但挡不住本机同账户下的其他程序（它们可重算密钥）。这是用零交互体验换取的取舍。
 
-如果系统凭据库写入失败，会回退到配置文件保存。配置文件损坏时，LibSSH 会将旧文件重命名为 `sessions.json.broken` 并使用默认配置启动。
+加密不可用时不持久化密码（绝不明文落盘），连接时改为现场输入。配置文件损坏时，LibSSH 会将旧文件重命名为 `sessions.json.broken` 并使用默认配置启动。
 
 ## AI Skill CLI
 
@@ -200,20 +198,16 @@ Windows 当前没有 GUI 内的全局符号链接开关，可使用完整 exe �
 
 ### 免重复授权（macOS）
 
-CLI 每次 `run` 都会从系统钥匙串读取会话密码。adhoc 签名的二进制每次重新构建后哈希都会变化，钥匙串会把它当成陌生应用反复弹授权框。用稳定的本地自签名证书签名后，「始终允许」即可长期生效：
+会话密码现在由机器绑定加密存储（见前文密码存储说明），连接时本地解密、**不再访问系统钥匙串**，因此不会再弹钥匙串授权框。仅在从旧版**首次升级**时，启动会把旧钥匙串里的密码迁移过来，期间可能一次性弹几次授权，点「允许」即可，迁移完永久安静。
+
+AI Skill CLI 的命令授权用策略开关，一次设置长期生效：
 
 ```bash
-scripts/setup-macos-codesign.sh        # 一次性：创建并信任本地签名证书（需管理员密码）
-scripts/install-macos-app.sh           # 构建 + 打包签名 + 部署到 /Applications
 LibSSH skill policy enable
 LibSSH skill policy allow-preset readonly   # 一键导入只读诊断命令集（先用 policy presets 查看内容）
 ```
 
-说明：
-
-- 旧钥匙串条目首次被新签名访问时会各弹一次授权框，选「始终允许」后永久安静。
-- 之后每次重新构建，跑一遍 `scripts/install-macos-app.sh` 即可，签名恒定，不再弹窗。
-- 通过自动更新安装的官方构建没有本地签名，更新后需重跑 `scripts/install-macos-app.sh` 恢复。
+本地自签名脚本（`scripts/setup-macos-codesign.sh` / `scripts/install-macos-app.sh`）仍可用于稳定签名（Gatekeeper、旧密码迁移时访问钥匙串），但已不再是连接免弹窗的前提。
 - `readonly` 预设只含只读诊断命令；预设外命令照旧被挡，按需单独 `policy allow`。
 
 ### 命令总览
@@ -468,7 +462,7 @@ src/
   ssh.rs          SSH 终端与 exec
   sftp.rs         SFTP worker 与文件操作
   proxy.rs        SOCKS5 / HTTP CONNECT 代理
-  secrets.rs      系统凭据库读写
+  secrets.rs      密码机器绑定加解密与迁移
   system.rs       本机资源采样、主题检测、全局 CLI 链接
   updater.rs      GitHub Releases 自动更新
   i18n.rs         中英文翻译

@@ -37,9 +37,9 @@ arboard = "3"
 # Zeroes password buffers on drop so plaintext credentials don't linger in
 # freed heap memory (core dumps / debuggers / /proc/pid/mem).
 zeroize = "1"
-# 系统凭据库存会话密码（macOS Keychain / Windows Credential Manager /
-# Linux Secret Service）。写优先 keyring、失败回退 sessions.json 明文；
-# 读时密码为空才回查 keyring（见 src/secrets.rs 的「无标志位」设计）。
+# keyring 现仅用于「自动迁移旧版钥匙串密码」（读取 + 删除旧条目）。会话密码
+# 改由机器绑定加密存储（见 src/secrets.rs 的 crypto 模块）；迁移在用户群普及
+# 后的未来版本可移除此依赖。
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 # app 自管密码加密：机器绑定密钥（HKDF-SHA256）+ XChaCha20-Poly1305 AEAD。
 machine-uid = "0.5"
