@@ -348,6 +348,59 @@ pub struct TunnelSpec {
     pub dest_port: u16,
 }
 
+impl TunnelSpec {
+    /// 解析一行 `[bind_addr:]bind_port:dest_host:dest_port`。
+    pub fn parse_line(line: &str) -> std::result::Result<TunnelSpec, String> {
+        let line = line.trim();
+        let parts: Vec<&str> = line.split(':').collect();
+        let (bind_addr, bind_port, dest_host, dest_port) = match parts.as_slice() {
+            [bp, dh, dp] => (String::new(), *bp, *dh, *dp),
+            [ba, bp, dh, dp] => (ba.to_string(), *bp, *dh, *dp),
+            _ => return Err(format!("隧道格式应为 [bind:]port:host:port，得到 `{line}`")),
+        };
+        let bind_port: u16 = bind_port
+            .parse()
+            .ok()
+            .filter(|p| *p > 0)
+            .ok_or_else(|| format!("本地端口非法：`{bind_port}`"))?;
+        let dest_port: u16 = dest_port
+            .parse()
+            .ok()
+            .filter(|p| *p > 0)
+            .ok_or_else(|| format!("目标端口非法：`{dest_port}`"))?;
+        if dest_host.trim().is_empty() {
+            return Err("目标主机为空".into());
+        }
+        Ok(TunnelSpec {
+            bind_addr,
+            bind_port,
+            dest_host: dest_host.trim().to_string(),
+            dest_port,
+        })
+    }
+
+    /// 反向格式化为规范行（bind_addr 为空时省略），供 UI 文本框回显。
+    pub fn to_line(&self) -> String {
+        if self.bind_addr.is_empty() {
+            format!("{}:{}:{}", self.bind_port, self.dest_host, self.dest_port)
+        } else {
+            format!(
+                "{}:{}:{}:{}",
+                self.bind_addr, self.bind_port, self.dest_host, self.dest_port
+            )
+        }
+    }
+}
+
+/// 把多行文本解析为隧道列表：跳过空行与非法行（一期宽松，UI 内联校验留后续）。
+pub fn parse_tunnel_lines(text: &str) -> Vec<TunnelSpec> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| TunnelSpec::parse_line(l).ok())
+        .collect()
+}
+
 /// 内置预设分组（首次运行 seed）：默认(无色)/本地(蓝)/测试(橙)/生产(绿)。
 fn preset_groups() -> Vec<Group> {
     vec![
@@ -1022,5 +1075,66 @@ mod tests {
         let s = loaded.get("x").unwrap();
         assert!(s.tunnels.is_empty());
         assert_eq!(s.jump_session_id, None);
+    }
+
+    #[test]
+    fn tunnel_parse_line_three_and_four_parts() {
+        let a = TunnelSpec::parse_line("8080:localhost:80").unwrap();
+        assert_eq!(
+            a,
+            TunnelSpec {
+                bind_addr: String::new(),
+                bind_port: 8080,
+                dest_host: "localhost".into(),
+                dest_port: 80
+            }
+        );
+        let b = TunnelSpec::parse_line("127.0.0.1:5432:db.internal:5432").unwrap();
+        assert_eq!(
+            b,
+            TunnelSpec {
+                bind_addr: "127.0.0.1".into(),
+                bind_port: 5432,
+                dest_host: "db.internal".into(),
+                dest_port: 5432
+            }
+        );
+    }
+
+    #[test]
+    fn tunnel_parse_line_rejects_bad_input() {
+        assert!(TunnelSpec::parse_line("8080:localhost").is_err()); // 段数不足
+        assert!(TunnelSpec::parse_line("0:localhost:80").is_err()); // 端口 0
+        assert!(TunnelSpec::parse_line("70000:localhost:80").is_err()); // 端口越界
+        assert!(TunnelSpec::parse_line("8080::80").is_err()); // 目标主机空
+        assert!(TunnelSpec::parse_line("8080:localhost:abc").is_err()); // 目标端口非数字
+    }
+
+    #[test]
+    fn tunnel_to_line_round_trips_and_omits_default_bind() {
+        let s = TunnelSpec {
+            bind_addr: String::new(),
+            bind_port: 8080,
+            dest_host: "localhost".into(),
+            dest_port: 80,
+        };
+        assert_eq!(s.to_line(), "8080:localhost:80");
+        assert_eq!(TunnelSpec::parse_line(&s.to_line()).unwrap(), s);
+        let s2 = TunnelSpec {
+            bind_addr: "0.0.0.0".into(),
+            bind_port: 9000,
+            dest_host: "h".into(),
+            dest_port: 9,
+        };
+        assert_eq!(s2.to_line(), "0.0.0.0:9000:h:9");
+    }
+
+    #[test]
+    fn parse_tunnel_lines_skips_blank_and_invalid() {
+        let text = "8080:localhost:80\n\n  \nGARBAGE\n127.0.0.1:5432:db:5432\n";
+        let v = parse_tunnel_lines(text);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].bind_port, 8080);
+        assert_eq!(v[1].dest_host, "db");
     }
 }
