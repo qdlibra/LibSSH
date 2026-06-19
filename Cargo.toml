@@ -78,3 +78,15 @@ panic = "abort"
 
 [profile.dev]
 opt-level = 1
+
+# parley（Slint 的文本布局）用 icu_segmenter 的 non-complex 分词器，渲染中文（Han）
+# 字符时会反复请求一个不存在的 CJ 词典（ICU 内部把它标记为语言 "ja"）。icu_provider
+# 在 debug 构建下会把这个「数据缺失」用 `std::eprintln!` 直接写 stderr —— 绕过
+# log / tracing，因此 EnvFilter 之类的日志过滤完全无效。结果每次文本布局都刷一行
+#   ICU4X data error: No segmentation model for language: ja
+# 几秒上千行，污染日志、拖慢渲染。关掉该依赖的 debug_assertions，即让 icu_provider
+# 走其内部的 no-op 日志分支（见 icu_provider/src/lib.rs 的 `pub mod log`，与 release
+# 行为一致），零运行时开销地根除刷屏。不影响 CJK 折行：Slint 仍按 Unicode 换行属性
+# 正常折行，缺的只是基于词典的更精细分词（中文 UI 用不到）。
+[profile.dev.package.icu_provider]
+debug-assertions = false
