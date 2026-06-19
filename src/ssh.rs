@@ -453,11 +453,58 @@ pub fn spawn_session(
     )
 }
 
+/// 连接并认证一个会话（直连/代理），返回**已认证**的 Handle。用于跳板机：
+/// 跳板自身必须先认证，才能在其上开到目标的 direct-tcpip 通道。
+async fn connect_and_auth(
+    session: &Session,
+    config: Arc<client::Config>,
+) -> Result<Handle<ClientHandler>> {
+    let handler = ClientHandler {
+        host: session.host.clone(),
+        port: session.port,
+    };
+    let addr = format!("{}:{}", session.host, session.port);
+    let mut handle = match crate::proxy::resolve(&session.proxy) {
+        Some(proxy) => {
+            let stream = crate::proxy::connect(&proxy, &session.host, session.port)
+                .await
+                .with_context(|| format!("jump proxy connect to {} failed", addr))?;
+            client::connect_stream(config, stream, handler)
+                .await
+                .with_context(|| format!("jump connect {} failed", addr))?
+        }
+        None => client::connect(config, addr.as_str(), handler)
+            .await
+            .with_context(|| format!("jump connect {} failed", addr))?,
+    };
+
+    let authed = match session.auth {
+        AuthMethod::Password => handle
+            .authenticate_password(&session.user, session.password.as_str())
+            .await
+            .context("jump password auth failed")?,
+        AuthMethod::Key => {
+            let key_with_hash = load_private_key_for_auth(&session.private_key_path)?;
+            handle
+                .authenticate_publickey(&session.user, key_with_hash)
+                .await
+                .context("jump publickey auth failed")?
+        }
+    };
+    if !authed {
+        let _ = handle
+            .disconnect(Disconnect::ByApplication, "jump auth failed", "")
+            .await;
+        bail!(t("跳板机认证失败", "jump host authentication failed"));
+    }
+    Ok(handle)
+}
+
 /// 建立到目标的**未认证**传输 Handle。第二项为需在整个会话期间保活的跳板 Handle
-/// （直连/代理时为 None；跳板逻辑在后续任务接入）。
+/// （直连/代理时为 None；经跳板时为已认证的跳板 Handle，其生命周期须贯穿会话）。
 async fn connect_transport(
     session: &Session,
-    _jump: &Option<Session>,
+    jump: &Option<Session>,
     config: Arc<client::Config>,
     events: &UnboundedSender<SessionEvent>,
 ) -> Result<(Handle<ClientHandler>, Option<Handle<ClientHandler>>)> {
@@ -466,6 +513,30 @@ async fn connect_transport(
         port: session.port,
     };
     let addr = format!("{}:{}", session.host, session.port);
+
+    // 跳板机：先连+认证跳板，再在其上开到目标的 direct-tcpip，把通道流当作传输层连目标。
+    if let Some(j) = jump {
+        let _ = events.send(SessionEvent::Status(format!(
+            "{} {}@{}:{} -> {}",
+            t("经跳板机连接", "via jump host"),
+            j.user,
+            j.host,
+            j.port,
+            addr
+        )));
+        let jump_handle = connect_and_auth(j, Arc::new(client::Config::default())).await?;
+        let channel = jump_handle
+            .channel_open_direct_tcpip(session.host.clone(), session.port as u32, "127.0.0.1", 0)
+            .await
+            .with_context(|| format!("jump direct-tcpip to {} failed", addr))?;
+        let stream = channel.into_stream();
+        let handle = client::connect_stream(config, stream, handler)
+            .await
+            .with_context(|| format!("connect {} via jump failed", addr))?;
+        return Ok((handle, Some(jump_handle)));
+    }
+
+    // 直连 / 代理。
     let handle = match crate::proxy::resolve(&session.proxy) {
         Some(proxy) => {
             let _ = events.send(SessionEvent::Status(format!(
