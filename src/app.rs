@@ -1221,6 +1221,11 @@ fn wire_callbacks(
             // spawn_sftp / 重连映射拿到的都是已解析副本。
             crate::secrets::resolve_session_password(&mut session);
             let session = session;
+            // 解析跳板会话（引用另一个已存会话）；克隆后解密其密码，仅用于本次连接。
+            let jump = connect_store.borrow().resolve_jump(&session).map(|mut j| {
+                crate::secrets::resolve_session_password(&mut j);
+                j
+            });
             let tab_id = format!("term-{}", uuid::Uuid::new_v4());
             connect_tab_sessions
                 .borrow_mut()
@@ -1294,6 +1299,7 @@ fn wire_callbacks(
                 &connect_ctx,
                 tab_id,
                 session,
+                jump,
                 initial_cols,
                 initial_rows,
             );
@@ -1517,6 +1523,7 @@ fn wire_callbacks(
     // 就地重连：手动按钮与自动重连定时器共用入口。终端缓冲 / 回看历史 /
     // SFTP 面板状态全部保留，只重建 SSH + SFTP 两条连接。
     let rc_ctx = io_ctx.clone();
+    let rc_store = store.clone();
     let rc_sessions = tab_sessions.clone();
     let rc_last_size = last_term_size.clone();
     let weak = window.as_weak();
@@ -1549,7 +1556,12 @@ fn wire_callbacks(
             });
         }
         let (cols, rows) = *rc_last_size.lock().unwrap();
-        start_session_io(weak.clone(), &rc_ctx, tab_id, session, cols, rows);
+        // 解析跳板会话（引用另一个已存会话）；克隆后解密其密码，仅用于本次连接。
+        let jump = rc_store.borrow().resolve_jump(&session).map(|mut j| {
+            crate::secrets::resolve_session_password(&mut j);
+            j
+        });
+        start_session_io(weak.clone(), &rc_ctx, tab_id, session, jump, cols, rows);
     });
 
     let weak = window.as_weak();
@@ -2782,6 +2794,7 @@ fn start_session_io(
     ctx: &SessionIoCtx,
     tab_id: String,
     session: Session,
+    jump: Option<Session>,
     initial_cols: u32,
     initial_rows: u32,
 ) {
@@ -2790,7 +2803,7 @@ fn start_session_io(
         ctx.runtime.handle(),
         tab_id.clone(),
         session,
-        None,
+        jump,
         initial_cols,
         initial_rows,
     );

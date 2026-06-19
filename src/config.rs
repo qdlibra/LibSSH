@@ -562,8 +562,6 @@ impl ConfigStore {
 
     /// 解析跳板会话：按 `jump_session_id` 查另一个已保存会话并克隆返回（不解密密码）。
     /// 自跳 / 空 id / 不存在 → None。调用方负责对返回值做 `resolve_session_password`。
-    // Task 7（app 连接路径）接线前是死代码；接线后移除本豁免。
-    #[allow(dead_code)]
     pub fn resolve_jump(&self, session: &Session) -> Option<Session> {
         let id = session.jump_session_id.as_deref()?;
         if id.is_empty() || id == session.id {
