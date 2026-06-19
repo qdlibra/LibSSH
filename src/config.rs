@@ -193,6 +193,9 @@ pub struct Session {
     pub proxy: String,
     #[serde(default)]
     pub last_used: Option<String>,
+    /// User-defined group/folder label for the connection list. Empty = ungrouped.
+    #[serde(default)]
+    pub group: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -235,6 +238,7 @@ impl Session {
             private_key_path: String::new(),
             proxy: String::new(),
             last_used: None,
+            group: String::new(),
         }
     }
 }

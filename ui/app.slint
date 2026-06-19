@@ -168,6 +168,8 @@ export component AppWindow inherits Window {
 
     // --- Session list ------------------------------------------------------
     in property <[SessionInfo]> sessions;
+    in-out property <string> search-text;        // quick-connect filter text
+    in property <string> session-subtitle;       // "N 个会话 · M 个分组 · …", built in Rust
 
     // --- Tabs --------------------------------------------------------------
     in property <[TabInfo]> tabs;
@@ -183,6 +185,7 @@ export component AppWindow inherits Window {
     in-out property <string> dialog-port: "22";
     in-out property <string> dialog-user: "root";
     in-out property <string> dialog-auth: "password";
+    in-out property <string> dialog-group;
     in-out property <string> dialog-password;
     in-out property <string> dialog-key-path;
     in-out property <string> dialog-test-status: "idle";  // "idle" | "testing" | "ok" | "fail"
@@ -190,6 +193,7 @@ export component AppWindow inherits Window {
 
     // --- Callbacks up to Rust ---------------------------------------------
     callback new-session-clicked();
+    callback search-changed(string /* quick-connect filter */);
     callback import-ssh-config();             // import hosts from ~/.ssh/config
     in-out property <string> ssh-import-hint;  // result text shown after import
     callback connect-session(string /* session-id */);
@@ -319,8 +323,11 @@ export component AppWindow inherits Window {
                 // Welcome tab
                 if root.active-tab-id == "welcome" : Welcome {
                     sessions: root.sessions;
+                    session-subtitle: root.session-subtitle;
+                    search-text <=> root.search-text;
                     import-hint: root.ssh-import-hint;
                     new-session => { root.new-session-clicked(); }
+                    search-changed(t) => { root.search-changed(t); }
                     import-ssh-config => { root.import-ssh-config(); }
                     connect-session(id) => { root.connect-session(id); }
                     edit-session(id) => { root.edit-session(id); }
@@ -1388,6 +1395,7 @@ export component AppWindow inherits Window {
         draft-port <=> root.dialog-port;
         draft-user <=> root.dialog-user;
         draft-auth <=> root.dialog-auth;
+        draft-group <=> root.dialog-group;
         draft-password <=> root.dialog-password;
         draft-key-path <=> root.dialog-key-path;
         test-status <=> root.dialog-test-status;

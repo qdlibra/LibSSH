@@ -118,70 +118,117 @@ export component SftpPanel inherits Rectangle {
     VerticalLayout {
         spacing: 0;
 
-        // --- Toolbar (full width) ------------------------------------------
+        // --- Toolbar / path bar (full width) -------------------------------
         Rectangle {
-            height: 30px;
-            background: Theme.bg-panel-alt;
+            height: 44px;
+            background: Theme.bg-main;
+
+            Rectangle {
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: Theme.border;
+            }
 
             HorizontalLayout {
-                padding-left: 6px;
-                padding-right: 6px;
-                spacing: 4px;
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 10px;
 
-                // Editable path bar: press Enter to navigate.
-                LineEdit {
-                    text <=> root.path-draft;
-                    placeholder-text: @tr("Enter remote path");
-                    font-size: Theme.fs-sm;
+                Text {
+                    text: "\u{e2c7}";   // Material Icons "folder"
+                    font-family: "Material Icons";
+                    color: Theme.folder;
+                    font-size: 17px;
+                    vertical-alignment: center;
+                }
+
+                // Editable path bar (borderless, monospace). Enter navigates.
+                Rectangle {
+                    background: transparent;
                     horizontal-stretch: 1;
-                    accepted(path) => {
-                        if (path != "") {
-                            root.navigate(path);
+                    path-input := TextInput {
+                        width: parent.width;
+                        height: parent.height;
+                        text <=> root.path-draft;
+                        color: Theme.text;
+                        font-family: Theme.font-mono;
+                        font-size: Theme.fs-sm;
+                        vertical-alignment: center;
+                        single-line: true;
+                        key-pressed(e) => {
+                            if (e.text == Key.Return || e.text == "\u{000D}") {
+                                if (self.text != "") { root.navigate(self.text); }
+                                accept
+                            } else {
+                                reject
+                            }
                         }
+                    }
+                    if root.path-draft == "" : Text {
+                        text: @tr("Enter remote path");
+                        color: Theme.text-faint;
+                        font-family: Theme.font-mono;
+                        font-size: Theme.fs-sm;
+                        vertical-alignment: center;
+                        height: parent.height;
                     }
                 }
 
                 up-btn := Rectangle {
-                    width: 24px; height: 22px;
-                    border-radius: Theme.radius-sm;
-                    background: up-ta.has-hover ? Theme.bg-hover : transparent;
+                    width: 30px; height: 30px;
+                    border-radius: 7px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    background: up-ta.has-hover ? Theme.row-hover : transparent;
                     up-ta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.navigate(".."); }
                     }
-                    Text { text: "↑"; color: Theme.text-secondary; font-size: Theme.fs-md;
+                    Text { text: "\u{e316}"; font-family: "Material Icons";   // keyboard_arrow_up
+                           color: up-ta.has-hover ? Theme.text : Theme.text-dim; font-size: 16px;
                            horizontal-alignment: center; vertical-alignment: center; }
                 }
 
                 Rectangle {
-                    width: 52px; height: 22px;
-                    border-radius: Theme.radius-sm;
+                    height: 30px;
+                    border-radius: 7px;
                     background: ul-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                    HorizontalLayout {
+                        padding-left: 13px; padding-right: 13px; spacing: 6px;
+                        alignment: center;
+                        Text { text: "\u{e2c6}"; font-family: "Material Icons"; color: #ffffff;   // file_upload
+                               font-size: 15px; vertical-alignment: center; }
+                        Text { text: @tr("Upload"); color: #ffffff; font-size: Theme.fs-sm; font-weight: 600;
+                               vertical-alignment: center; }
+                    }
                     ul-ta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.upload-clicked(root.current-path); }
                     }
-                    Text { text: @tr("Upload"); color: #ffffff; font-size: Theme.fs-sm;
-                           horizontal-alignment: center; vertical-alignment: center; }
                 }
 
                 Rectangle {
-                    width: 24px; height: 22px;
-                    border-radius: Theme.radius-sm;
-                    background: ref-ta.has-hover ? Theme.bg-hover : transparent;
+                    width: 30px; height: 30px;
+                    border-radius: 7px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    background: ref-ta.has-hover ? Theme.row-hover : transparent;
                     ref-ta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.refresh(root.current-path); }
                     }
                     Text { text: "\u{E5D5}"; font-family: "Material Icons";
-                           color: Theme.text-secondary; font-size: Theme.fs-sm;
+                           color: ref-ta.has-hover ? Theme.text : Theme.text-dim; font-size: 15px;
                            horizontal-alignment: center; vertical-alignment: center; }
                 }
 
                 Rectangle {
-                    width: 24px; height: 22px;
-                    border-radius: Theme.radius-sm;
-                    background: collapse-ta.has-hover ? Theme.bg-hover : transparent;
+                    width: 30px; height: 30px;
+                    border-radius: 7px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    background: collapse-ta.has-hover ? Theme.row-hover : transparent;
                     collapse-ta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.collapse-clicked(); }
@@ -189,8 +236,8 @@ export component SftpPanel inherits Rectangle {
                     Text {
                         text: "\u{E5CE}";
                         font-family: "Material Icons";
-                        color: Theme.text-secondary;
-                        font-size: Theme.fs-sm;
+                        color: collapse-ta.has-hover ? Theme.text : Theme.text-dim;
+                        font-size: 15px;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
@@ -210,18 +257,21 @@ export component SftpPanel inherits Rectangle {
 
                 // Tree header
                 Rectangle {
-                    height: 20px;
-                    background: Theme.bg-root;
+                    height: 30px;
+                    background: Theme.col-head;
                     Text {
-                        x: 8px;
+                        x: 14px;
                         text: @tr("Directory tree");
-                        color: Theme.text-muted;
-                        font-size: Theme.fs-xs;
+                        font-family: Theme.font-mono;
+                        color: Theme.text-faint;
+                        font-size: 10px;
+                        font-weight: 500;
+                        letter-spacing: 0.7px;
                         vertical-alignment: center;
                         height: parent.height;
                     }
                 }
-                Rectangle { height: 1px; background: Theme.border-subtle; }
+                Rectangle { height: 1px; background: Theme.border; }
 
                 // Tree list with scrollbar
                 ScrollView {
@@ -231,12 +281,12 @@ export component SftpPanel inherits Rectangle {
                         spacing: 0;
 
                         for node[i] in root.tree-nodes : Rectangle {
-                            height: 22px;
+                            height: 27px;
                             background: node-ta.has-hover
-                                ? Theme.bg-hover
+                                ? Theme.row-hover
                                 : (node.path == root.current-path
-                                    ? #4a90e230
-                                    : (mod(i, 2) == 0 ? transparent : #ffffff08));
+                                    ? Theme.accent-soft
+                                    : transparent);
 
                             node-ta := TouchArea {
                                 mouse-cursor: pointer;
@@ -244,31 +294,43 @@ export component SftpPanel inherits Rectangle {
                             }
 
                             HorizontalLayout {
-                                spacing: 0;
-                                padding-top: 1px;
+                                spacing: 6px;
+                                padding-left: 8px;
+                                padding-right: 10px;
 
                                 // Depth indent spacer
-                                Rectangle { width: node.depth * 12px; }
+                                Rectangle { width: node.depth * 14px; }
 
                                 // Expand/collapse arrow
                                 Text {
-                                    width: 14px;
+                                    width: 12px;
                                     text: node.has-children
-                                        ? (node.expanded ? "▼" : "▶")
+                                        ? (node.expanded ? "▾" : "▸")
                                         : " ";
-                                    color: Theme.text-muted;
-                                    font-size: 9px;
+                                    color: Theme.text-faint;
+                                    font-size: 10px;
                                     horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                // Folder glyph
+                                Text {
+                                    text: "\u{e2c7}";   // Material Icons "folder"
+                                    font-family: "Material Icons";
+                                    color: Theme.folder;
+                                    font-size: 14px;
                                     vertical-alignment: center;
                                 }
 
                                 // Folder name
                                 Text {
                                     text: node.depth == 0 ? "/" : node.name;
+                                    font-family: Theme.font-mono;
                                     color: node.path == root.current-path
                                         ? Theme.accent
-                                        : Theme.text-primary;
-                                    font-size: Theme.fs-sm;
+                                        : Theme.text-dim;
+                                    font-weight: node.depth == 0 ? 600 : 400;
+                                    font-size: 12px;
                                     horizontal-stretch: 1;
                                     overflow: elide;
                                     vertical-alignment: center;
@@ -312,19 +374,22 @@ export component SftpPanel inherits Rectangle {
 
                 // Column headers
                 Rectangle {
-                    height: 20px;
-                    background: Theme.bg-root;
+                    height: 30px;
+                    background: Theme.col-head;
                     HorizontalLayout {
-                        padding-left: 8px; padding-right: 8px;
-                        Text { text: @tr("Name"); color: Theme.text-muted; font-size: Theme.fs-xs;
+                        padding-left: 16px; padding-right: 16px; spacing: 12px;
+                        Text { text: @tr("Name"); font-family: Theme.font-mono; color: Theme.text-faint;
+                               font-size: 10px; font-weight: 500; letter-spacing: 0.7px;
                                horizontal-stretch: 1; vertical-alignment: center; }
-                        Text { text: @tr("Size"); color: Theme.text-muted; font-size: Theme.fs-xs;
+                        Text { text: @tr("Size"); font-family: Theme.font-mono; color: Theme.text-faint;
+                               font-size: 10px; font-weight: 500; letter-spacing: 0.7px;
                                width: 72px; horizontal-alignment: right; vertical-alignment: center; }
-                        Text { text: @tr("Modified"); color: Theme.text-muted; font-size: Theme.fs-xs;
+                        Text { text: @tr("Modified"); font-family: Theme.font-mono; color: Theme.text-faint;
+                               font-size: 10px; font-weight: 500; letter-spacing: 0.7px;
                                width: 116px; horizontal-alignment: right; vertical-alignment: center; }
                     }
                 }
-                Rectangle { height: 1px; background: Theme.border-subtle; }
+                Rectangle { height: 1px; background: Theme.border; }
 
                 // File list with scrollbar
                 ScrollView {
@@ -352,10 +417,10 @@ export component SftpPanel inherits Rectangle {
                         // 用空 model 隐藏过期文件列表，避免被顶部「Loading...」行整体下推；
                         // 行内加载(loading-target 指向某目录)仍展示列表以呈现该行 spinner。
                         for entry[i] in ((root.loading && root.loading-target == "") ? [] : root.entries) : row := Rectangle {
-                            height: 24px;
+                            height: 26px;
                             background: (row-ta.has-hover || root.selected-index == i)
-                                ? #4a90e225
-                                : (mod(i, 2) == 0 ? transparent : #ffffff08);
+                                ? Theme.accent-soft
+                                : transparent;
 
                             // Right-click anchor (relative to this row).
                             property <length> mx;
@@ -439,7 +504,7 @@ export component SftpPanel inherits Rectangle {
                             }
 
                             HorizontalLayout {
-                                padding-left: 8px; padding-right: 8px; spacing: 4px;
+                                padding-left: 16px; padding-right: 16px; spacing: 8px;
 
                                 // 图标组：加载中的目录在文件夹图标前平滑展开一个
                                 // 旋转的加载指示（spacing:0 的子布局保证未加载时
@@ -479,7 +544,8 @@ export component SftpPanel inherits Rectangle {
                                 }
                                 Text {
                                     text: entry.name;
-                                    color: Theme.text-primary;
+                                    font-family: Theme.font-mono;
+                                    color: Theme.text;
                                     font-size: Theme.fs-sm;
                                     horizontal-stretch: 1;
                                     overflow: elide;
@@ -487,12 +553,14 @@ export component SftpPanel inherits Rectangle {
                                 }
                                 Text {
                                     text: entry.is-dir ? "" : entry.size;
-                                    color: Theme.text-secondary; font-size: Theme.fs-xs;
+                                    font-family: Theme.font-mono;
+                                    color: Theme.text-faint; font-size: Theme.fs-xs;
                                     width: 72px; horizontal-alignment: right; vertical-alignment: center;
                                 }
                                 Text {
                                     text: entry.modified;
-                                    color: Theme.text-muted; font-size: Theme.fs-xs;
+                                    font-family: Theme.font-mono;
+                                    color: Theme.text-dim; font-size: Theme.fs-xs;
                                     width: 116px; horizontal-alignment: right; vertical-alignment: center;
                                 }
                             }

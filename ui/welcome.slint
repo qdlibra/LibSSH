@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { PrimaryButton, GhostButton } from "widgets.slint";
+import { GhostButton } from "widgets.slint";
 
 export struct SessionInfo {
     id: string,
@@ -10,41 +10,109 @@ export struct SessionInfo {
     auth: string,      // "password" | "key"
     last-used: string, // ISO timestamp or "never"
     latency: int,      // round-trip ms; -1 = probing, -2 = unreachable/timeout
+    group-label: string, // group header label ("" = no header / ungrouped-only)
+    group-index: int,    // group order index → drives the group accent colour
+    group-size: int,     // number of (filtered) sessions in this group
 }
 
-component SessionActionButton inherits Rectangle {
-    in property <string> text;
-    in property <bool> primary: false;
-    in property <bool> danger: false;
-    in property <length> button-width: 66px;
+// --- ConnectButton (accent text button) ------------------------------------
+component ConnectButton inherits Rectangle {
     callback clicked();
+    height: 30px;
+    border-radius: 7px;
+    background: ta.pressed ? Theme.accent-pressed
+        : (ta.has-hover ? Theme.accent-hover : Theme.accent);
+    animate background { duration: 120ms; }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        Text {
+            text: @tr("Connect");
+            color: white;
+            font-size: 12px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
 
-    width: button-width;
-    height: 24px;
-    border-radius: Theme.radius-sm;
-    border-width: primary ? 0px : 1px;
-    border-color: danger ? Theme.danger : Theme.border-subtle;
-    background: primary
-        ? (action-ta.pressed ? Theme.accent-pressed
-           : (action-ta.has-hover ? Theme.accent-hover : Theme.accent))
-        : danger
-            ? (action-ta.has-hover ? Theme.danger.with-alpha(0.14) : transparent)
-            : (action-ta.has-hover ? Theme.bg-hover : Theme.bg-panel);
+// --- RowIconButton (30×30 bordered icon) -----------------------------------
+component RowIconButton inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> danger: false;
+    callback clicked();
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    border-width: 1px;
+    border-color: ta.has-hover && danger ? Theme.danger-soft : Theme.border;
+    background: ta.has-hover ? (danger ? Theme.danger-soft : Theme.row-hover) : transparent;
     animate background, border-color { duration: 120ms; }
-
     Text {
-        text: root.text;
-        color: primary ? white : (danger ? Theme.danger : Theme.text-primary);
-        font-size: Theme.fs-xs;
-        font-weight: primary ? 600 : 400;
+        text: glyph;
+        font-family: "Material Icons";
+        font-size: 15px;
+        color: ta.has-hover ? (danger ? Theme.danger : Theme.text) : Theme.text-dim;
         horizontal-alignment: center;
         vertical-alignment: center;
-        overflow: elide;
     }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
 
-    action-ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+// --- GroupHeader (dot + label + count pill + divider) -----------------------
+component GroupHeader inherits Rectangle {
+    in property <string> label;
+    in property <int> count;
+    in property <int> group-index;
+    property <brush> gcolor: group-index == 0 ? Theme.accent
+        : group-index == 1 ? Theme.warn
+        : group-index == 2 ? Theme.ok
+        : group-index == 3 ? Theme.danger : Theme.accent;
+    height: 34px;
+    HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 18px;
+        padding-top: 13px;
+        padding-bottom: 8px;
+        spacing: 9px;
+        Rectangle {
+            width: 7px; height: 7px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 4px;
+            background: gcolor;
+        }
+        Text {
+            text: label;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            color: Theme.text-dim;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            border-radius: 9px;
+            background: Theme.track;
+            HorizontalLayout {
+                padding-left: 7px; padding-right: 7px;
+                padding-top: 1px; padding-bottom: 1px;
+                Text {
+                    text: "\{count}";
+                    font-family: Theme.font-mono;
+                    font-size: 10px;
+                    color: Theme.text-faint;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            Rectangle {
+                y: (parent.height - 1px) / 2;
+                width: parent.width; height: 1px;
+                background: Theme.border;
+            }
+        }
     }
 }
 
@@ -55,167 +123,202 @@ component SessionRow inherits Rectangle {
     callback edit();
     callback request-delete();
 
-    height: 40px;
-    border-radius: Theme.radius-sm;
-    background: transparent;
+    property <brush> gcolor: session.group-index == 0 ? Theme.accent
+        : session.group-index == 1 ? Theme.warn
+        : session.group-index == 2 ? Theme.ok
+        : session.group-index == 3 ? Theme.danger : Theme.accent;
+    property <string> lat-text: session.latency == -1 ? "···"
+        : session.latency == -2 ? @tr("timeout")
+        : "\{session.latency}ms";
+    property <brush> lat-color: session.latency == -1 ? Theme.text-faint
+        : session.latency == -2 ? Theme.danger
+        : session.latency < 100 ? Theme.ok
+        : session.latency < 250 ? Theme.warn : Theme.danger;
+    property <brush> lat-bg: session.latency == -1 ? transparent
+        : session.latency == -2 ? Theme.danger-soft
+        : session.latency < 100 ? Theme.ok-soft
+        : session.latency < 250 ? Theme.warn-soft : Theme.danger-soft;
 
-    // Row content ------------------------------------------------------------
+    height: 48px;
+    background: row-ta.has-hover ? Theme.row-hover : transparent;
+    animate background { duration: 100ms; }
+
+    // Declared FIRST so the action buttons stay clickable above it.
+    row-ta := TouchArea { }
+
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 10px;
+        padding-left: 18px;
+        padding-right: 18px;
+        spacing: 14px;
 
-        Rectangle {
-            width: 18px; height: 18px;
-            y: (parent.height - self.height) / 2;
-            border-radius: 3px;
-            background: Theme.bg-elevated;
+        // name cell (flex)
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            preferred-width: 0;
+            min-width: 120px;
+            spacing: 11px;
+            Rectangle {
+                width: 3px; height: 18px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 2px;
+                background: gcolor;
+            }
+            Rectangle {
+                width: 28px; height: 28px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 8px;
+                background: gcolor.with-alpha(0.14);
+                Text {
+                    text: "\u{E875}";   // Material "dns" server glyph
+                    font-family: "Material Icons";
+                    color: gcolor;
+                    font-size: 15px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
             Text {
-                text: "\u{E875}";   // Material Icons "dns" — server/host glyph
-                font-family: "Material Icons";
-                color: Theme.text-secondary;
-                font-size: Theme.fs-sm;
-                horizontal-alignment: center;
+                text: session.name;
+                color: Theme.text;
+                font-size: 13px;
+                font-weight: 500;
+                overflow: elide;
+                horizontal-stretch: 1;
                 vertical-alignment: center;
             }
         }
 
         Text {
-            text: session.name;
-            color: Theme.text-primary;
-            font-size: Theme.fs-md;
-            vertical-alignment: center;
-            width: 130px;
-            overflow: elide;
-        }
-        // 地址列：弹性宽度。preferred-width 归零让各行忽略内容宽、
-        // 纯按 stretch 比例分配剩余空间，保证与表头及其它行对齐。
-        Text {
             text: session.host;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-sm;
+            font-family: Theme.font-mono;
+            color: Theme.text-dim;
+            font-size: 12px;
+            width: 150px;
             vertical-alignment: center;
-            horizontal-stretch: 2;
-            preferred-width: 0;
-            min-width: 100px;
             overflow: elide;
         }
         Text {
             text: "\{session.port}";
-            color: Theme.text-secondary;
-            font-size: Theme.fs-sm;
-            vertical-alignment: center;
-            width: 44px;
-            overflow: elide;
-        }
-        // Latency probe, colour-graded: <400ms green, 400–800ms amber, >800ms red.
-        // -1 = still probing, -2 = unreachable / timed out.
-        Text {
-            text: session.latency == -1 ? "···"
-                : session.latency == -2 ? @tr("timeout")
-                : "\{session.latency}ms";
-            color: session.latency == -1 ? Theme.text-muted
-                 : session.latency == -2 ? Theme.danger
-                 : session.latency < 400 ? Theme.success
-                 : session.latency < 800 ? Theme.warning
-                 : Theme.danger;
             font-family: Theme.font-mono;
-            font-size: Theme.fs-xs;
+            color: Theme.text-faint;
+            font-size: 12px;
             width: 52px;
-            horizontal-alignment: right;
             vertical-alignment: center;
+        }
+        // latency pill
+        HorizontalLayout {
+            width: 74px;
+            alignment: start;
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                border-radius: 6px;
+                background: lat-bg;
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px;
+                    padding-top: 3px; padding-bottom: 3px;
+                    Text {
+                        text: lat-text;
+                        font-family: Theme.font-mono;
+                        font-size: 11px;
+                        font-weight: 500;
+                        color: lat-color;
+                        vertical-alignment: center;
+                    }
+                }
+            }
         }
         Text {
             text: session.user;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-sm;
+            font-family: Theme.font-mono;
+            color: Theme.text-dim;
+            font-size: 12px;
+            width: 96px;
             vertical-alignment: center;
-            horizontal-stretch: 1;
-            preferred-width: 0;
-            min-width: 60px;
             overflow: elide;
         }
-        SessionActionButton {
-            text: @tr("Connect");
-            primary: true;
-            clicked => { root.connect(); }
-        }
-        SessionActionButton {
-            text: @tr("Edit");
-            clicked => { root.edit(); }
-        }
-        SessionActionButton {
-            text: @tr("Delete");
-            danger: true;
-            clicked => { root.request-delete(); }
+        // actions
+        HorizontalLayout {
+            width: 160px;
+            alignment: end;
+            spacing: 7px;
+            ConnectButton {
+                y: (parent.height - self.height) / 2;
+                clicked => { root.connect(); }
+            }
+            RowIconButton {
+                glyph: "\u{E3C9}";   // edit
+                y: (parent.height - self.height) / 2;
+                clicked => { root.edit(); }
+            }
+            RowIconButton {
+                glyph: "\u{E872}";   // delete
+                danger: true;
+                y: (parent.height - self.height) / 2;
+                clicked => { root.request-delete(); }
+            }
         }
     }
 }
 
-// --- SessionListHeader：快速连接列表表头，列宽与 SessionRow 严格对齐 -------
-component SessionListHeader inherits Rectangle {
-    height: 22px;
+// --- Column header (aligned 1:1 with SessionRow) ---------------------------
+component ListHeader inherits Rectangle {
+    height: 36px;
+    background: Theme.col-head;
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 10px;
-
-        Rectangle { width: 18px; }   // 对齐服务器图标列
+        padding-left: 18px;
+        padding-right: 18px;
+        spacing: 14px;
         Text {
             text: @tr("Name");
-            width: 130px;
-            color: Theme.text-muted;
-            font-size: Theme.fs-xs;
-            font-weight: 600;
-            vertical-alignment: center;
-        }
-        Text {
-            text: @tr("Address");
-            horizontal-stretch: 2;
-            preferred-width: 0;
-            min-width: 100px;
-            color: Theme.text-muted;
-            font-size: Theme.fs-xs;
-            font-weight: 600;
-            vertical-alignment: center;
-        }
-        Text {
-            text: @tr("Port");
-            width: 44px;
-            color: Theme.text-muted;
-            font-size: Theme.fs-xs;
-            font-weight: 600;
-            vertical-alignment: center;
-        }
-        Text {
-            text: @tr("Latency");
-            width: 52px;
-            color: Theme.text-muted;
-            font-size: Theme.fs-xs;
-            font-weight: 600;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-        }
-        Text {
-            text: @tr("User");
             horizontal-stretch: 1;
             preferred-width: 0;
-            min-width: 60px;
-            color: Theme.text-muted;
-            font-size: Theme.fs-xs;
-            font-weight: 600;
-            vertical-alignment: center;
+            min-width: 120px;
+            font-family: Theme.font-mono;
+            font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+            color: Theme.text-faint; vertical-alignment: center;
         }
-        // 对齐 Connect / Edit / Delete 按钮区（66×3 + 间距 10×2 = 218px）
-        Rectangle { width: 218px; }
+        Text {
+            text: @tr("Address"); width: 150px;
+            font-family: Theme.font-mono;
+            font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+            color: Theme.text-faint; vertical-alignment: center;
+        }
+        Text {
+            text: @tr("Port"); width: 52px;
+            font-family: Theme.font-mono;
+            font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+            color: Theme.text-faint; vertical-alignment: center;
+        }
+        Text {
+            text: @tr("Latency"); width: 74px;
+            font-family: Theme.font-mono;
+            font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+            color: Theme.text-faint; vertical-alignment: center;
+        }
+        Text {
+            text: @tr("User"); width: 96px;
+            font-family: Theme.font-mono;
+            font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+            color: Theme.text-faint; vertical-alignment: center;
+        }
+        Text {
+            text: @tr("Actions"); width: 160px;
+            font-family: Theme.font-mono;
+            font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+            color: Theme.text-faint;
+            horizontal-alignment: right; vertical-alignment: center;
+        }
     }
 }
 
 // --- Welcome ---------------------------------------------------------------
 export component Welcome inherits Rectangle {
     in property <[SessionInfo]> sessions;
-    in property <string> import-hint;        // result text after an import
+    in property <string> session-subtitle;
+    in-out property <string> search-text;
+    in property <string> import-hint;        // result text after an import (unused in this layout)
     callback new-session();
+    callback search-changed(string);
     callback import-ssh-config();
     callback connect-session(string);
     callback edit-session(string);
@@ -224,142 +327,218 @@ export component Welcome inherits Rectangle {
     in-out property <string> pending-delete-id;
     in-out property <string> pending-delete-name;
 
-    background: Theme.bg-root;
+    background: Theme.bg-main;
 
     VerticalLayout {
-        padding: 24px;
+        padding-left: 30px;
+        padding-right: 30px;
+        padding-top: 26px;
+        padding-bottom: 30px;
         spacing: 20px;
 
-        VerticalLayout {
-            spacing: 4px;
-            Text {
-                text: "LibSSH";
-                color: Theme.text-primary;
-                font-size: 28px;
-                font-weight: 700;
-            }
-        }
-
-        // Quick Connect card
-        Rectangle {
-            background: Theme.bg-panel;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.border-subtle;
-
+        // --- Header ---------------------------------------------------------
+        HorizontalLayout {
+            spacing: 16px;
             VerticalLayout {
-                padding: 16px;
-                spacing: 12px;
-
-                HorizontalLayout {
-                    spacing: 8px;
-                    Text {
-                        text: @tr("Quick connect");
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-lg;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    // Result of the last "Import ~/.ssh/config" (triggered from
-                    // the settings menu), e.g. "imported 3".
-                    Text {
-                        text: root.import-hint;
-                        color: Theme.text-muted;
-                        font-size: Theme.fs-sm;
-                        vertical-alignment: center;
-                    }
-                    PrimaryButton {
-                        text: @tr("+ New session");
-                        clicked => { root.new-session(); }
-                    }
+                spacing: 6px;
+                horizontal-stretch: 1;
+                alignment: center;
+                Text {
+                    text: @tr("Quick connect");
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 700;
                 }
-
-                if sessions.length == 0 : Rectangle {
-                    height: 120px;
-                    background: Theme.bg-root;
-                    border-radius: Theme.radius-sm;
+                Text {
+                    text: root.session-subtitle;
+                    color: Theme.text-dim;
+                    font-size: 12.5px;
+                    overflow: elide;
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+                // search box
+                Rectangle {
+                    width: 210px;
+                    height: 34px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 8px;
+                    background: Theme.card;
                     border-width: 1px;
-                    border-color: Theme.border-subtle;
-
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 6px;
+                    border-color: search-in.has-focus ? Theme.accent : Theme.border;
+                    HorizontalLayout {
+                        padding-left: 11px;
+                        padding-right: 11px;
+                        spacing: 8px;
                         Text {
-                            text: @tr("No sessions yet");
-                            color: Theme.text-secondary;
-                            font-size: Theme.fs-md;
-                            horizontal-alignment: center;
+                            text: "\u{E8B6}";   // Material "search"
+                            font-family: "Material Icons";
+                            color: Theme.text-faint;
+                            font-size: 15px;
+                            vertical-alignment: center;
                         }
-                        Text {
-                            text: @tr("Use 'New session' (top-right) to add your first server");
-                            color: Theme.text-muted;
-                            font-size: Theme.fs-sm;
-                            horizontal-alignment: center;
+                        Rectangle {
+                            background: transparent;
+                            horizontal-stretch: 1;
+                            search-in := TextInput {
+                                width: parent.width;
+                                height: parent.height;
+                                text <=> root.search-text;
+                                color: Theme.text;
+                                font-size: 12.5px;
+                                vertical-alignment: center;
+                                single-line: true;
+                                edited => { root.search-changed(self.text); }
+                            }
+                            if root.search-text == "" : Text {
+                                text: @tr("Search sessions…");
+                                color: Theme.text-faint;
+                                font-size: 12.5px;
+                                vertical-alignment: center;
+                                height: parent.height;
+                            }
                         }
                     }
                 }
-
-                if sessions.length > 0 : VerticalLayout {
-                    spacing: 2px;
-                    SessionListHeader {}
-                    for session[i] in sessions : SessionRow {
-                        session: session;
-                        connect => { root.connect-session(session.id); }
-                        edit => { root.edit-session(session.id); }
-                        request-delete => {
-                            root.pending-delete-id = session.id;
-                            root.pending-delete-name = session.name;
-                            root.delete-confirm-open = true;
+                // new session
+                Rectangle {
+                    height: 34px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 8px;
+                    background: new-ta.pressed ? Theme.accent-pressed
+                        : (new-ta.has-hover ? Theme.accent-hover : Theme.accent);
+                    animate background { duration: 120ms; }
+                    HorizontalLayout {
+                        padding-left: 15px; padding-right: 15px; spacing: 7px;
+                        Text {
+                            text: "\u{E145}";   // Material "add"
+                            font-family: "Material Icons";
+                            color: white;
+                            font-size: 16px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: @tr("New session");
+                            color: white;
+                            font-size: 12.5px;
+                            font-weight: 600;
+                            vertical-alignment: center;
                         }
                     }
+                    new-ta := TouchArea { mouse-cursor: pointer; clicked => { root.new-session(); } }
                 }
             }
         }
 
-        // Filler
-        Rectangle { vertical-stretch: 1; }
+        // --- Empty state ----------------------------------------------------
+        if sessions.length == 0 : Rectangle {
+            vertical-stretch: 1;
+            background: Theme.card;
+            border-radius: 11px;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                alignment: center;
+                spacing: 6px;
+                Text {
+                    text: @tr("No sessions yet");
+                    color: Theme.text-dim;
+                    font-size: Theme.fs-md;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: @tr("Use 'New session' (top-right) to add your first server");
+                    color: Theme.text-faint;
+                    font-size: Theme.fs-sm;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+
+        // --- List card ------------------------------------------------------
+        if sessions.length > 0 : Flickable {
+            vertical-stretch: 1;
+            viewport-width: self.width;
+            viewport-height: max(self.height, card-col.preferred-height);
+            card-col := VerticalLayout {
+                alignment: start;
+                Rectangle {
+                    background: Theme.card;
+                    border-radius: 11px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    clip: true;
+                    VerticalLayout {
+                        ListHeader {}
+                        Rectangle { height: 1px; background: Theme.border; }
+                        for session[i] in root.sessions : VerticalLayout {
+                            if session.group-label != "" && (i == 0 || root.sessions[i - 1].group-label != session.group-label) : GroupHeader {
+                                label: session.group-label;
+                                count: session.group-size;
+                                group-index: session.group-index;
+                            }
+                            SessionRow {
+                                session: session;
+                                connect => { root.connect-session(session.id); }
+                                edit => { root.edit-session(session.id); }
+                                request-delete => {
+                                    root.pending-delete-id = session.id;
+                                    root.pending-delete-name = session.name;
+                                    root.delete-confirm-open = true;
+                                }
+                            }
+                        }
+                        Rectangle { height: 8px; }
+                    }
+                }
+            }
+        }
     }
 
+    // --- Delete confirmation modal -----------------------------------------
     Rectangle {
         visible: root.delete-confirm-open;
         width: parent.width;
         height: parent.height;
         background: #00000080;
 
+        TouchArea { clicked => { root.delete-confirm-open = false; } }
+
         Rectangle {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             width: min(380px, parent.width - 48px);
-            height: 178px;
-            background: Theme.bg-panel;
-            border-radius: Theme.radius-md;
+            height: 180px;
+            background: Theme.card;
+            border-radius: Theme.radius-lg;
             border-width: 1px;
             border-color: Theme.border-strong;
-            drop-shadow-blur: 18px;
-            drop-shadow-color: #00000070;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Theme.shadow-color;
+
+            TouchArea {}   // swallow clicks inside the card
 
             VerticalLayout {
-                padding: 16px;
+                padding: 18px;
                 spacing: 10px;
 
                 Text {
                     text: @tr("Delete session");
-                    color: Theme.text-primary;
+                    color: Theme.text;
                     font-size: Theme.fs-lg;
                     font-weight: 700;
                 }
-
                 Text {
                     text: @tr("Delete this session from quick connect?");
-                    color: Theme.text-secondary;
+                    color: Theme.text-dim;
                     font-size: Theme.fs-sm;
                     wrap: word-wrap;
                 }
-
                 Text {
                     text: root.pending-delete-name;
-                    color: Theme.text-primary;
+                    color: Theme.text;
                     font-size: Theme.fs-md;
                     font-weight: 600;
                     overflow: elide;
@@ -370,7 +549,6 @@ export component Welcome inherits Rectangle {
                 HorizontalLayout {
                     alignment: end;
                     spacing: 8px;
-
                     GhostButton {
                         text: @tr("Cancel");
                         clicked => {
@@ -379,16 +557,27 @@ export component Welcome inherits Rectangle {
                             root.pending-delete-name = "";
                         }
                     }
-
-                    SessionActionButton {
-                        text: @tr("OK");
-                        danger: true;
-                        button-width: 80px;
-                        clicked => {
-                            root.remove-session(root.pending-delete-id);
-                            root.delete-confirm-open = false;
-                            root.pending-delete-id = "";
-                            root.pending-delete-name = "";
+                    Rectangle {
+                        width: 84px; height: 30px;
+                        border-radius: Theme.radius-sm;
+                        background: ok-ta.pressed ? Theme.danger.with-alpha(0.75)
+                            : (ok-ta.has-hover ? Theme.danger.with-alpha(0.88) : Theme.danger);
+                        Text {
+                            text: @tr("OK");
+                            color: white;
+                            font-size: Theme.fs-sm;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        ok-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.remove-session(root.pending-delete-id);
+                                root.delete-confirm-open = false;
+                                root.pending-delete-id = "";
+                                root.pending-delete-name = "";
+                            }
                         }
                     }
                 }

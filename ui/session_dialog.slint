@@ -8,6 +8,7 @@ export struct SessionDraft {
     port: int,
     user: string,
     auth: string,      // "password" | "key"
+    group: string,
     password: string,
     private-key-path: string,
     remember: bool,    // 勾选则把密码机器绑定加密存本地
@@ -25,6 +26,7 @@ export component SessionDialog inherits Rectangle {
     in-out property <string> draft-port: "22";
     in-out property <string> draft-user: "root";
     in-out property <string> draft-auth: "password";
+    in-out property <string> draft-group;
     in-out property <string> draft-password;
     in-out property <bool> draft-remember: true;
     in-out property <string> draft-key-path;
@@ -51,7 +53,7 @@ export component SessionDialog inherits Rectangle {
 
     Rectangle {
         width: 420px;
-        height: 500px;
+        height: 560px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: Theme.bg-panel;
@@ -103,6 +105,12 @@ export component SessionDialog inherits Rectangle {
                 label: @tr("Username");
                 placeholder: "root";
                 value <=> root.draft-user;
+            }
+
+            LabeledInput {
+                label: @tr("Group");
+                placeholder: @tr("e.g. production (optional)");
+                value <=> root.draft-group;
             }
 
             // Auth method toggle
@@ -279,6 +287,7 @@ export component SessionDialog inherits Rectangle {
                                 port: root.draft-port.to-float(),
                                 user: root.draft-user,
                                 auth: root.draft-auth,
+                                group: root.draft-group,
                                 password: root.draft-password,
                                 private-key-path: root.draft-key-path,
                                 remember: root.draft-remember,
@@ -301,6 +310,7 @@ export component SessionDialog inherits Rectangle {
                             port: root.draft-port.to-float(),
                             user: root.draft-user,
                             auth: root.draft-auth,
+                            group: root.draft-group,
                             password: root.draft-password,
                             private-key-path: root.draft-key-path,
                             remember: root.draft-remember,

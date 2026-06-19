@@ -1,140 +1,177 @@
 import { Theme } from "theme.slint";
 import { Sparkline } from "widgets.slint";
 
-// One filesystem row for the disk-usage panel.
+// One filesystem row for the mount-usage panel.
 export struct DiskInfo {
     path: string,
     detail: string,   // "available/total"
     percent: float,   // used fraction 0.0..1.0
 }
 
-// --- StatRow ---------------------------------------------------------------
-// A single label / percentage / progress-bar row used for CPU / memory / swap.
-component StatRow inherits HorizontalLayout {
+// --- SideHeading -----------------------------------------------------------
+// Small faint section label (运行状态 / 服务器资源 / 挂载点 …).
+component SideHeading inherits Text {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.7px;
+    color: Theme.text-faint;
+    vertical-alignment: center;
+}
+
+// --- Meter -----------------------------------------------------------------
+// CPU / memory / swap: [label .... value] over a thin track, optional detail.
+component Meter inherits VerticalLayout {
     in property <string> label;
-    in property <float> percent; // 0.0 .. 1.0
+    in property <float> percent;   // 0.0 .. 1.0
     in property <string> detail;
-    in property <brush> bar-color: Theme.accent;
+    spacing: 5px;
 
-    spacing: 6px;
-    padding-left: 8px;
-    padding-right: 8px;
-    height: 22px;
-
-    Text {
-        text: label;
-        color: Theme.text-secondary;
-        font-size: Theme.fs-sm;
-        width: 52px;          // fits English "Memory" as well as 中文 "内存"
-        vertical-alignment: center;
-        overflow: elide;
+    HorizontalLayout {
+        Text {
+            text: label;
+            font-family: Theme.font-mono;
+            font-size: 11px;
+            font-weight: 500;
+            color: Theme.text-dim;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+        Text {
+            text: Math.round(clamp(percent, 0.0, 1.0) * 100) + "%";
+            font-family: Theme.font-mono;
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
     }
 
-    // Progress bar
     Rectangle {
-        background: Theme.bg-root;
-        border-radius: 2px;
-        min-width: 60px;
-        horizontal-stretch: 1;
-
+        height: 5px;
+        border-radius: 2.5px;
+        background: Theme.track;
+        clip: true;
         Rectangle {
             x: 0;
             y: 0;
             height: parent.height;
             width: parent.width * clamp(percent, 0.0, 1.0);
-            background: bar-color;
-            border-radius: 2px;
+            border-radius: 2.5px;
+            background: percent < 0.6 ? Theme.ok : percent < 0.85 ? Theme.warn : Theme.danger;
             animate width { duration: 500ms; easing: ease-out; }
-        }
-
-        Text {
-            x: 6px;
-            text: Math.round(percent * 100) + "%";
-            color: Theme.text-primary;
-            font-size: Theme.fs-xs;
-            vertical-alignment: center;
-            height: parent.height;
         }
     }
 
-    Text {
+    if detail != "" : Text {
         text: detail;
-        color: Theme.text-muted;
-        font-size: Theme.fs-xs;
-        width: 56px;
-        horizontal-alignment: right;
-        vertical-alignment: center;
+        font-family: Theme.font-mono;
+        font-size: 10px;
+        color: Theme.text-faint;
     }
 }
 
-// --- NetGraph --------------------------------------------------------------
-// One network throughput graph: a header row (↑ tx / ↓ rx, plus an optional
-// NIC selector dropdown) over an auto-scaled sparkline.
-component NetGraph inherits VerticalLayout {
+// --- MountRow --------------------------------------------------------------
+component MountRow inherits Rectangle {
+    in property <string> path;
+    in property <string> detail;
+    in property <float> percent;
+
+    height: row.preferred-height + 14px;
+    border-radius: 7px;
+    background: ta.has-hover ? Theme.row-hover : transparent;
+    ta := TouchArea {}
+
+    row := VerticalLayout {
+        x: 8px;
+        y: 7px;
+        width: parent.width - 16px;
+        spacing: 5px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: path;
+                font-family: Theme.font-mono;
+                font-size: 11px;
+                font-weight: 500;
+                color: Theme.text-dim;
+                horizontal-stretch: 1;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            Text {
+                text: detail;
+                font-family: Theme.font-mono;
+                font-size: 10px;
+                color: Theme.text-faint;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle {
+            height: 4px;
+            border-radius: 2px;
+            background: Theme.track;
+            clip: true;
+            Rectangle {
+                x: 0;
+                y: 0;
+                height: parent.height;
+                width: parent.width * clamp(percent, 0.0, 1.0);
+                border-radius: 2px;
+                background: percent < 0.6 ? Theme.ok : percent < 0.85 ? Theme.warn : Theme.danger;
+            }
+        }
+    }
+}
+
+// --- NetSection ------------------------------------------------------------
+// Throughput header (↑ tx / ↓ rx, optional NIC selector) over a bar sparkline.
+component NetSection inherits VerticalLayout {
+    in property <string> heading;
     in property <string> up-text;
     in property <string> down-text;
     in property <[float]> history;
+    in property <brush> bar-color: Theme.accent;
+    in property <float> bar-opacity: 0.45;
     in property <bool> show-selector: false;
     in property <[string]> ifaces;
     in property <string> selected;
     callback iface-selected(string);
 
-    // Stay at preferred height; without this the inherited VerticalLayout grabs
-    // a stretch share of the sidebar and balloons the sparkline into blank space.
     vertical-stretch: 0;
-    spacing: 3px;
+    spacing: 8px;
 
     HorizontalLayout {
-        spacing: 3px;
-        Text {                              // ↑ upload (green)
-            text: "\u{E5D8}";
-            font-family: "Material Icons";
-            color: Theme.success;
-            font-size: Theme.fs-xs;
-            vertical-alignment: center;
+        SideHeading {
+            text: root.heading;
+            horizontal-stretch: 1;
         }
-        Text {
-            text: root.up-text;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-xs;
-            vertical-alignment: center;
-        }
-        Text {                              // ↓ download (blue)
-            text: "\u{E5DB}";
-            font-family: "Material Icons";
-            color: Theme.accent;
-            font-size: Theme.fs-xs;
-            vertical-alignment: center;
-        }
-        Text {
-            text: root.down-text;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-xs;
-            vertical-alignment: center;
-        }
-        Rectangle { horizontal-stretch: 1; } // spacer pushes selector to the right
-
         if root.show-selector : Rectangle {
-            width: 64px;
+            width: 60px;
             height: 18px;
-            border-radius: 3px;
-            background: sel-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
+            border-radius: 6px;
+            background: Theme.card;
+            border-width: 1px;
+            border-color: sel-ta.has-hover ? Theme.border-strong : Theme.border;
 
             HorizontalLayout {
-                padding-left: 5px; padding-right: 4px; spacing: 2px;
+                padding-left: 6px;
+                padding-right: 4px;
+                spacing: 2px;
                 Text {
                     text: root.selected;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-xs;
+                    font-family: Theme.font-mono;
+                    font-size: 10px;
+                    color: Theme.text-dim;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                     overflow: elide;
                 }
                 Text {
-                    text: "\u{E5CF}";
+                    text: "\u{E5CF}";   // expand_more
                     font-family: "Material Icons";
-                    color: Theme.text-muted;
-                    font-size: 8px;
+                    color: Theme.text-faint;
+                    font-size: 9px;
                     vertical-alignment: center;
                 }
             }
@@ -145,31 +182,33 @@ component NetGraph inherits VerticalLayout {
             }
 
             popup := PopupWindow {
-                x: 0; y: parent.height + 2px;
+                x: 0;
+                y: parent.height + 3px;
                 width: 96px;
                 Rectangle {
-                    background: Theme.bg-panel;
-                    border-radius: 4px;
+                    background: Theme.card;
+                    border-radius: 6px;
                     border-width: 1px;
                     border-color: Theme.border-strong;
                     drop-shadow-blur: 10px;
-                    drop-shadow-color: #00000050;
+                    drop-shadow-color: Theme.shadow-color;
                     VerticalLayout {
                         padding: 4px;
                         spacing: 1px;
                         for iface in root.ifaces : Rectangle {
                             height: 22px;
-                            border-radius: 3px;
-                            background: row-ta.has-hover ? Theme.bg-hover : transparent;
+                            border-radius: 4px;
+                            background: row-ta.has-hover ? Theme.row-hover : transparent;
                             row-ta := TouchArea {
                                 mouse-cursor: pointer;
                                 clicked => { root.iface-selected(iface); }
                             }
                             Text {
-                                x: 6px;
+                                x: 7px;
                                 text: iface;
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-xs;
+                                font-family: Theme.font-mono;
+                                color: Theme.text;
+                                font-size: 11px;
                                 vertical-alignment: center;
                                 height: parent.height;
                             }
@@ -180,46 +219,56 @@ component NetGraph inherits VerticalLayout {
         }
     }
 
+    HorizontalLayout {
+        spacing: 16px;
+        HorizontalLayout {
+            spacing: 4px;
+            Text { text: "↑"; font-family: Theme.font-mono; font-size: 11px; color: Theme.text-faint; vertical-alignment: center; }
+            Text { text: root.up-text; font-family: Theme.font-mono; font-size: 11px; font-weight: 500; color: Theme.text; vertical-alignment: center; }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            Text { text: "↓"; font-family: Theme.font-mono; font-size: 11px; color: Theme.text-faint; vertical-alignment: center; }
+            Text { text: root.down-text; font-family: Theme.font-mono; font-size: 11px; font-weight: 500; color: Theme.text; vertical-alignment: center; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+
     Sparkline {
-        height: 48px;
+        height: 34px;
         values: root.history;
-        line-color: Theme.accent;
+        line-color: root.bar-color;
+        bar-opacity: root.bar-opacity;
     }
 }
 
-component ThemeModeButton inherits Rectangle {
+// --- SegThemeButton --------------------------------------------------------
+component SegThemeButton inherits Rectangle {
     in property <string> icon;
     in property <int> value;
-    callback clicked();
 
+    width: 28px;
     height: 24px;
-    min-width: 48px;
-    horizontal-stretch: 1;
-    border-radius: Theme.radius-sm;
-    border-width: 1px;
-    border-color: Theme.mode == root.value ? Theme.accent : Theme.border-subtle;
-    background: Theme.mode == root.value ? Theme.accent.with-alpha(0.22)
-              : theme-button-ta.has-hover ? Theme.bg-hover
-              : Theme.bg-panel-alt;
-
-    theme-button-ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
+    border-radius: 6px;
+    background: Theme.mode == value ? Theme.seg-active : (seg-ta.has-hover ? Theme.row-hover : transparent);
+    animate background { duration: 120ms; }
 
     Text {
-        text: root.icon;
+        text: icon;
         font-family: "Material Icons";
-        color: Theme.mode == root.value ? Theme.accent : Theme.text-secondary;
-        font-size: 16px;
+        font-size: 14px;
+        color: Theme.mode == value ? Theme.text : Theme.text-faint;
         horizontal-alignment: center;
         vertical-alignment: center;
+    }
+
+    seg-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Theme.mode = value; }
     }
 }
 
 // --- Sidebar ---------------------------------------------------------------
-// Left-hand panel showing local machine health, mimicking FinalShell's
-// @tr("Status") column but kept minimal for the v0.1 baseline.
 export component Sidebar inherits Rectangle {
     in property <string> connection-state: @tr("Not connected");
     in property <int> conn-state;                    // 0 gray / 1 green / 2 yellow
@@ -242,250 +291,214 @@ export component Sidebar inherits Rectangle {
     in-out property <bool> collapsed: false;
     callback select-net-iface(string);
 
-    width: root.collapsed ? 30px : 220px;
-    background: Theme.bg-panel;
+    width: root.collapsed ? 30px : 266px;
+    background: Theme.bg-sidebar;
     border-width: 0;
+
+    // right hairline border
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        height: parent.height;
+        background: Theme.border;
+    }
 
     if root.collapsed : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: Theme.bg-panel;
+        background: Theme.bg-sidebar;
 
         Rectangle {
             x: 4px;
-            y: 8px;
+            y: 12px;
             width: 22px;
             height: 22px;
             border-radius: Theme.radius-sm;
-            background: show-ta.has-hover ? Theme.bg-hover : transparent;
+            background: show-ta.has-hover ? Theme.row-hover : transparent;
             show-ta := TouchArea {
                 mouse-cursor: pointer;
                 clicked => { root.collapsed = false; }
             }
             Text {
-                text: "\u{E5CC}";
+                text: "\u{E5CC}";   // chevron_right
                 font-family: "Material Icons";
-                color: Theme.text-secondary;
+                color: Theme.text-dim;
                 font-size: Theme.fs-sm;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
         }
-
     }
 
-    VerticalLayout {
-        visible: !root.collapsed;
-        padding: 10px;
-        spacing: 10px;
-
-        // Status header
-        VerticalLayout {
-            spacing: 4px;
-            HorizontalLayout {
-                spacing: 6px;
-                Rectangle {
-                    width: 8px; height: 8px;
-                    y: (parent.height - self.height) / 2;
-                    border-radius: 4px;
-                    background: root.conn-state == 1 ? Theme.success
-                              : root.conn-state == 2 ? Theme.warning
-                              : Theme.text-muted;
-                }
-                Text {
-                    text: @tr("Status");
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-md;
-                    font-weight: 600;
-                    horizontal-stretch: 1;
-                    vertical-alignment: center;
-                }
-                Rectangle {
-                    width: 22px;
-                    height: 22px;
-                    border-radius: Theme.radius-sm;
-                    background: hide-ta.has-hover ? Theme.bg-hover : transparent;
-                    hide-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.collapsed = true; }
-                    }
-                    Text {
-                        text: "\u{E5CB}";
-                        font-family: "Material Icons";
-                        color: Theme.text-secondary;
-                        font-size: Theme.fs-sm;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-            Text {
-                text: connection-state;
-                color: Theme.text-secondary;
-                font-size: Theme.fs-sm;
-            }
-        }
-
-        Rectangle { height: 1px; background: Theme.border-subtle; }
-
-        // System stats — local machine on the welcome tab, the remote server
-        // when a connected session tab is active.
-        Text {
-            text: root.resource-title;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-sm;
-        }
-
-        VerticalLayout {
-            spacing: 6px;
-            StatRow {
-                label: "CPU";
-                percent: root.cpu-percent;
-                detail: "";
-                bar-color: Theme.accent;
-            }
-            StatRow {
-                label: @tr("Memory");
-                percent: root.mem-percent;
-                detail: root.mem-detail;
-                bar-color: Theme.success;
-            }
-            StatRow {
-                label: @tr("Swap");
-                percent: root.swap-percent;
-                detail: root.swap-detail;
-                bar-color: Theme.warning;
-            }
-        }
-
-        Rectangle { height: 1px; background: Theme.border-subtle; }
-
-        // Network — dual graph: top follows the active tab (remote NIC with a
-        // selector on a session tab; local on the welcome tab), bottom is the
-        // local machine.
-        VerticalLayout {
-            vertical-stretch: 0;
-            spacing: 6px;
-            NetGraph {
-                up-text: root.net-top-up;
-                down-text: root.net-top-down;
-                history: root.net-top-history;
-                show-selector: root.net-show-selector;
-                ifaces: root.net-ifaces;
-                selected: root.net-selected;
-                iface-selected(i) => { root.select-net-iface(i); }
-            }
-            Text {
-                text: @tr("Local");
-                color: Theme.text-muted;
-                font-size: Theme.fs-xs;
-            }
-            NetGraph {
-                up-text: root.net-bot-up;
-                down-text: root.net-bot-down;
-                history: root.net-bot-history;
-            }
-        }
-
-        Rectangle { height: 1px; background: Theme.border-subtle; }
-
-        // Disk-usage panel (active tab's filesystems; local on the welcome tab).
-        VerticalLayout {
+    if !root.collapsed : VerticalLayout {
+        // --- scroll region ---
+        Flickable {
             vertical-stretch: 1;
-            spacing: 3px;
+            viewport-width: self.width;
+            viewport-height: max(self.height, content.preferred-height);
 
-            HorizontalLayout {
-                padding-left: 6px;
-                padding-right: 6px;
-                Text {
-                    text: @tr("Path");
-                    color: Theme.text-muted;
-                    font-size: Theme.fs-xs;
-                    horizontal-stretch: 1;
-                }
-                Text {
-                    text: @tr("Free/Total");
-                    color: Theme.text-muted;
-                    font-size: Theme.fs-xs;
-                }
-            }
+            content := VerticalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 16px;
+                padding-bottom: 16px;
+                spacing: 20px;
+                alignment: start;
 
-            Flickable {
-                vertical-stretch: 1;
-                viewport-width: self.width;
-                // Grow only when the list overflows; otherwise match the visible
-                // height so `alignment: start` keeps rows pinned to the top.
-                viewport-height: max(self.height, disk-col.preferred-height);
-                disk-col := VerticalLayout {
-                    alignment: start;
-                    spacing: 1px;
-                    for d in root.disks : Rectangle {
-                        height: 20px;
-                        border-radius: 2px;
-                        clip: true;
-
-                        // Usage fill: green-ish normally, amber/red when full.
+                // status
+                VerticalLayout {
+                    spacing: 8px;
+                    HorizontalLayout {
+                        SideHeading {
+                            text: @tr("Status");
+                            horizontal-stretch: 1;
+                        }
                         Rectangle {
-                            x: 0;
-                            y: 0;
-                            height: parent.height;
-                            width: parent.width * clamp(d.percent, 0.0, 1.0);
-                            background: d.percent > 0.9 ? Theme.danger.with-alpha(0.32)
-                                      : d.percent > 0.75 ? Theme.warning.with-alpha(0.30)
-                                      : Theme.accent.with-alpha(0.22);
-                        }
-                        HorizontalLayout {
-                            padding-left: 6px;
-                            padding-right: 6px;
-                            spacing: 4px;
-                            Text {
-                                text: d.path;
-                                color: Theme.text-secondary;
-                                font-size: Theme.fs-xs;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                                overflow: elide;
+                            width: 18px;
+                            height: 18px;
+                            border-radius: Theme.radius-sm;
+                            background: hide-ta.has-hover ? Theme.row-hover : transparent;
+                            hide-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.collapsed = true; }
                             }
                             Text {
-                                text: d.detail;
-                                color: Theme.text-muted;
-                                font-size: Theme.fs-xs;
+                                text: "\u{E5CB}";   // chevron_left
+                                font-family: "Material Icons";
+                                color: Theme.text-faint;
+                                font-size: 13px;
+                                horizontal-alignment: center;
                                 vertical-alignment: center;
-                                horizontal-alignment: right;
                             }
                         }
+                    }
+                    Rectangle {
+                        height: status-col.preferred-height + 22px;
+                        background: Theme.card;
+                        border-radius: 9px;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        drop-shadow-blur: 2px;
+                        drop-shadow-offset-y: 1px;
+                        drop-shadow-color: Theme.shadow-color;
+
+                        status-col := VerticalLayout {
+                            x: 12px;
+                            y: 11px;
+                            width: parent.width - 24px;
+                            spacing: 5px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 4px;
+                                    background: root.conn-state == 1 ? Theme.ok
+                                              : root.conn-state == 2 ? Theme.warn
+                                              : Theme.text-faint;
+                                }
+                                Text {
+                                    text: root.connection-state;
+                                    color: Theme.text;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // server / local resources
+                VerticalLayout {
+                    spacing: 12px;
+                    SideHeading { text: root.resource-title; }
+                    Meter { label: "CPU"; percent: root.cpu-percent; detail: ""; }
+                    Meter { label: @tr("Memory"); percent: root.mem-percent; detail: root.mem-detail; }
+                    Meter { label: @tr("Swap"); percent: root.swap-percent; detail: root.swap-detail; }
+                }
+
+                // top network (server when connected, local on welcome)
+                NetSection {
+                    heading: root.conn-state == 1 ? @tr("Server network") : @tr("Network");
+                    up-text: root.net-top-up;
+                    down-text: root.net-top-down;
+                    history: root.net-top-history;
+                    bar-color: root.conn-state == 1 ? Theme.ok : Theme.accent;
+                    bar-opacity: root.conn-state == 1 ? 0.5 : 0.45;
+                    show-selector: root.net-show-selector;
+                    ifaces: root.net-ifaces;
+                    selected: root.net-selected;
+                    iface-selected(i) => { root.select-net-iface(i); }
+                }
+
+                // local network
+                NetSection {
+                    heading: @tr("Local network");
+                    up-text: root.net-bot-up;
+                    down-text: root.net-bot-down;
+                    history: root.net-bot-history;
+                    bar-color: Theme.accent;
+                    bar-opacity: 0.45;
+                }
+
+                // mounts
+                VerticalLayout {
+                    spacing: 9px;
+                    HorizontalLayout {
+                        SideHeading { text: @tr("Mounts"); horizontal-stretch: 1; }
+                        Text {
+                            text: @tr("Free/Total");
+                            font-family: Theme.font-mono;
+                            font-size: 10px;
+                            color: Theme.text-faint;
+                            vertical-alignment: center;
+                        }
+                    }
+                    for d in root.disks : MountRow {
+                        path: d.path;
+                        detail: d.detail;
+                        percent: d.percent;
                     }
                 }
             }
         }
 
-        Text {
-            text: "LibSSH v0.2.3";
-            color: Theme.text-muted;
-            font-size: Theme.fs-xs;
-            horizontal-alignment: center;
+        // --- footer ---
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
         }
-
-        HorizontalLayout {
-            height: 24px;
-            spacing: 4px;
-            // 三个按钮只切换 Theme.mode；std-widgets 的 Palette.color-scheme 由
-            // app.slint 统一跟随 Theme.is-dark 同步（见 AppWindow 的 changed 处理），
-            // 避免在此写死 Palette 后切回「系统」时残留旧配色。
-            ThemeModeButton {
-                icon: "\u{E430}"; // wb_sunny
-                value: 1;
-                clicked => { Theme.mode = 1; }
-            }
-            ThemeModeButton {
-                icon: "\u{E3A8}"; // brightness_3
-                value: 2;
-                clicked => { Theme.mode = 2; }
-            }
-            ThemeModeButton {
-                icon: "\u{E30C}"; // desktop_windows
-                value: 0;
-                clicked => { Theme.mode = 0; }
+        Rectangle {
+            height: 53px;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 12px;
+                padding-bottom: 16px;
+                Text {
+                    text: "v0.2.3";
+                    font-family: Theme.font-mono;
+                    font-size: 11px;
+                    color: Theme.text-faint;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Rectangle {
+                    width: seg.preferred-width;
+                    background: Theme.seg-track;
+                    border-radius: 8px;
+                    seg := HorizontalLayout {
+                        padding: 2px;
+                        spacing: 2px;
+                        SegThemeButton { icon: "\u{E430}"; value: 1; }  // wb_sunny
+                        SegThemeButton { icon: "\u{E3A8}"; value: 2; }  // brightness_3
+                        SegThemeButton { icon: "\u{E30C}"; value: 0; }  // desktop_windows
+                    }
+                }
             }
         }
     }

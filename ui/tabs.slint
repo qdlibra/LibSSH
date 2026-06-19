@@ -9,20 +9,26 @@ export struct TabInfo {
 }
 
 // --- SingleTab -------------------------------------------------------------
+// Flat tab with an accent underline when active (no pill background).
 component SingleTab inherits Rectangle {
     in property <TabInfo> info;
     in property <bool> active;
     callback selected();
     callback closed();
 
-    height: 30px;
-    min-width: 100px;          // 缩短：原 120px，短名称（如 "pve"）时更紧凑
-    max-width: 160px;          // 新增：防止长名称把 tab 撑得过宽
-    horizontal-stretch: 0;    // 新增：不参与 TabBar 的等分拉伸，保持自然宽度
-    border-radius: Theme.radius-sm;
-    background: active ? Theme.bg-panel
-        : (touch.has-hover ? Theme.bg-hover : transparent);
+    min-width: 90px;
+    max-width: 170px;
+    horizontal-stretch: 0;
+    background: !active && touch.has-hover ? Theme.row-hover : transparent;
     animate background { duration: 120ms; }
+
+    // active underline, flush with the bar's bottom border
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        width: parent.width;
+        background: root.active ? Theme.accent : transparent;
+    }
 
     // Declared FIRST so the HorizontalLayout's children (close button) are at
     // a higher z-order and receive their own click events.
@@ -32,24 +38,25 @@ component SingleTab inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 6px;
+        padding-left: 13px;
+        padding-right: 8px;
         spacing: 8px;
         alignment: start;
 
         // Status indicator
         Rectangle {
-            width: 8px; height: 8px;
+            width: 7px; height: 7px;
             y: (parent.height - self.height) / 2;
             border-radius: 4px;
-            background: info.kind == "welcome" ? Theme.text-muted
-                : (info.connected ? Theme.success : Theme.warning);
+            background: info.kind == "welcome" ? Theme.text-faint
+                : (info.connected ? Theme.ok : Theme.warn);
         }
 
         Text {
             text: info.title;
-            color: active ? Theme.text-primary : Theme.text-secondary;
-            font-size: Theme.fs-sm;
+            color: active ? Theme.text : Theme.text-dim;
+            font-size: 12.5px;
+            font-weight: active ? 600 : 500;
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
@@ -58,8 +65,9 @@ component SingleTab inherits Rectangle {
         // Only show close button for non-welcome tabs
         if info.kind != "welcome" : IconButton {
             glyph: "×";
-            size: 20px;
+            size: 18px;
             y: (parent.height - self.height) / 2;
+            fg: Theme.text-faint;
             clicked => { root.closed(); }
         }
     }
@@ -73,11 +81,20 @@ export component TabBar inherits Rectangle {
     callback tab-closed(string);
     callback new-tab();
 
-    height: 36px;
-    background: Theme.bg-panel-alt;
+    height: 42px;
+    background: Theme.bg-main;
+
+    // bottom hairline
+    Rectangle {
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.border;
+    }
 
     HorizontalLayout {
-        padding: 3px;
+        padding-left: 10px;
+        padding-right: 10px;
         spacing: 2px;
 
         for tab[i] in tabs : SingleTab {

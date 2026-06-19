@@ -23,34 +23,38 @@ export component CommandBar inherits Rectangle {
     property <bool> suggestions-visible: !root.dismissed
         && cmd-input.text != "" && root.suggestions.length > 0;
 
-    height: 34px;
-    background: Theme.bg-panel-alt;
-    border-width: 1px;
-    border-color: Theme.border-subtle;
+    height: 40px;
+    background: Theme.bg-sidebar;
+
+    // top hairline border only
+    Rectangle {
+        y: 0;
+        width: parent.width;
+        height: 1px;
+        background: Theme.border;
+    }
 
     HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
-        spacing: 6px;
+        padding-left: 16px;
+        padding-right: 12px;
+        spacing: 10px;
 
         Text {
             text: ">_";
-            color: Theme.text-muted;
+            color: Theme.accent;
             font-family: Theme.font-mono;
-            font-size: Theme.fs-sm;
+            font-size: Theme.fs-md;
+            font-weight: 600;
             vertical-alignment: center;
         }
 
         Rectangle {
-            background: Theme.bg-root;
-            border-radius: Theme.radius-sm;
-            border-width: 1px;
-            border-color: cmd-input.has-focus ? Theme.accent : Theme.border-subtle;
+            background: transparent;
             horizontal-stretch: 1;
 
             cmd-input := TextInput {
-                x: 8px;
-                width: parent.width - 16px;
+                x: 0;
+                width: parent.width;
                 height: parent.height;
                 color: Theme.text-primary;
                 font-family: Theme.font-mono;
@@ -98,13 +102,24 @@ export component CommandBar inherits Rectangle {
                     }
                 }
             }
+
+            if cmd-input.text == "" : Text {
+                x: 0;
+                text: @tr("Type a command and press Enter…");
+                color: Theme.text-faint;
+                font-family: Theme.font-mono;
+                font-size: Theme.fs-sm;
+                vertical-alignment: center;
+                height: parent.height;
+            }
         }
 
         // 快捷命令开关（星形）
         Rectangle {
-            width: 26px;
-            border-radius: Theme.radius-sm;
-            background: star-ta.has-hover || root.quick-open ? Theme.bg-hover : transparent;
+            width: 28px;
+            height: 28px;
+            border-radius: 7px;
+            background: star-ta.has-hover || root.quick-open ? Theme.row-hover : transparent;
             star-ta := TouchArea {
                 mouse-cursor: pointer;
                 clicked => { root.quick-open = !root.quick-open; }
@@ -112,8 +127,8 @@ export component CommandBar inherits Rectangle {
             Text {
                 text: "\u{E838}";   // Material Icons "star"
                 font-family: "Material Icons";
-                color: root.quick-open ? Theme.accent : Theme.text-secondary;
-                font-size: Theme.fs-md;
+                color: root.quick-open || star-ta.has-hover ? Theme.warn : Theme.text-faint;
+                font-size: 15px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }

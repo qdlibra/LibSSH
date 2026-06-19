@@ -146,21 +146,22 @@ export component LabeledInput inherits VerticalLayout {
 }
 
 // --- Sparkline -------------------------------------------------------------
-// Compact horizontal bar chart used in the stats sidebar.
+// Compact vertical-bar chart used in the stats sidebar. Bars sit directly on
+// the sidebar background (transparent) per the design spec.
 export component Sparkline inherits Rectangle {
     in property <[float]> values;
     in property <brush> line-color: Theme.accent;
+    in property <float> bar-opacity: 0.5;
 
-    background: Theme.bg-root;
-    border-radius: Theme.radius-sm;
+    background: transparent;
     clip: true;
 
     for v[i] in values : Rectangle {
         x: i * (parent.width / max(1, values.length));
-        y: parent.height - (parent.height * clamp(v, 0.0, 1.0));
-        width: (parent.width / max(1, values.length)) - 1px;
-        height: parent.height * clamp(v, 0.0, 1.0);
-        background: line-color.with-alpha(0.85);
-        border-radius: 1px;
+        y: parent.height - max(2px, parent.height * clamp(v, 0.0, 1.0));
+        width: (parent.width / max(1, values.length)) - 1.5px;
+        height: max(2px, parent.height * clamp(v, 0.0, 1.0));
+        background: line-color.with-alpha(bar-opacity);
+        border-radius: 1.5px;
     }
 }

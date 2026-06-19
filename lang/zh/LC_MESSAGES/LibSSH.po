@@ -305,3 +305,33 @@ msgstr "名称（可选）"
 
 msgid "Command"
 msgstr "命令"
+
+msgid "Server network"
+msgstr "服务器网络"
+
+msgid "Network"
+msgstr "网络吞吐"
+
+msgid "Local network"
+msgstr "本机网络"
+
+msgid "Mounts"
+msgstr "挂载点"
+
+msgid "Type a command and press Enter…"
+msgstr "输入命令并回车执行…"
+
+msgid "Actions"
+msgstr "操作"
+
+msgid "Search sessions…"
+msgstr "搜索会话…"
+
+msgid "Group"
+msgstr "分组"
+
+msgid "e.g. production (optional)"
+msgstr "如 生产环境（可选）"
+
+msgid "timeout"
+msgstr "超时"

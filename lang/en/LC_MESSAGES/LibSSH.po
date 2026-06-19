@@ -305,3 +305,33 @@ msgstr "Name (optional)"
 
 msgid "Command"
 msgstr "Command"
+
+msgid "Server network"
+msgstr "Server network"
+
+msgid "Network"
+msgstr "Network"
+
+msgid "Local network"
+msgstr "Local network"
+
+msgid "Mounts"
+msgstr "Mounts"
+
+msgid "Type a command and press Enter…"
+msgstr "Type a command and press Enter…"
+
+msgid "Actions"
+msgstr "Actions"
+
+msgid "Search sessions…"
+msgstr "Search sessions…"
+
+msgid "Group"
+msgstr "Group"
+
+msgid "e.g. production (optional)"
+msgstr "e.g. production (optional)"
+
+msgid "timeout"
+msgstr "timeout"

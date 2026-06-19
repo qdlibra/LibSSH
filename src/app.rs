@@ -206,7 +206,7 @@ pub fn run(log_buffer: crate::logbuf::LogBuffer) -> anyhow::Result<()> {
 
 fn initialise_models(window: &AppWindow, store: &ConfigStore) -> AppModels {
     let sessions_model: Rc<VecModel<SessionInfo>> = Rc::new(VecModel::default());
-    sync_sessions_to_model(store, &sessions_model);
+    sync_sessions_to_model(window, store, &sessions_model, "");
     window.set_sessions(ModelRc::from(sessions_model.clone()));
 
     let tabs_model: Rc<VecModel<TabInfo>> = Rc::new(VecModel::default());
@@ -531,26 +531,111 @@ fn notes_blocks_model(md: &str) -> ModelRc<NoteBlock> {
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
-fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<SessionInfo>) {
-    let rows: Vec<SessionInfo> = store
-        .sessions()
-        .iter()
-        .map(|s| SessionInfo {
-            id: s.id.clone().into(),
-            name: s.name.clone().into(),
-            host: s.host.clone().into(),
-            port: s.port as i32,
-            user: s.user.clone().into(),
-            auth: s.auth.as_str().into(),
-            last_used: s
-                .last_used
-                .clone()
-                .unwrap_or_else(|| "never".to_string())
-                .into(),
-            latency: -1,
-        })
-        .collect();
+/// Rebuild the quick-connect model: filter by `filter` (name/host/user), order
+/// by group (first-appearance), annotate each row with its group header label,
+/// colour index and size, and refresh the header subtitle. Reordering is safe
+/// for latency probing because `set_session_latency` writes back by id; already
+/// measured latencies are carried forward by id so search doesn't blank them.
+fn sync_sessions_to_model(
+    win: &AppWindow,
+    store: &ConfigStore,
+    model: &VecModel<SessionInfo>,
+    filter: &str,
+) {
+    let sessions = store.sessions();
+
+    // Preserve already-measured latencies (keyed by id) across rebuilds.
+    let mut prev_lat: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+    for i in 0..model.row_count() {
+        if let Some(row) = model.row_data(i) {
+            prev_lat.insert(row.id.to_string(), row.latency);
+        }
+    }
+
+    let filter_lc = filter.trim().to_lowercase();
+    let matches = |s: &Session| -> bool {
+        filter_lc.is_empty()
+            || s.name.to_lowercase().contains(&filter_lc)
+            || s.host.to_lowercase().contains(&filter_lc)
+            || s.user.to_lowercase().contains(&filter_lc)
+    };
+
+    // Group order = first appearance over the full set.
+    let mut group_order: Vec<String> = Vec::new();
+    for s in sessions.iter() {
+        if !group_order.iter().any(|g| g == &s.group) {
+            group_order.push(s.group.clone());
+        }
+    }
+    let has_named = sessions.iter().any(|s| !s.group.is_empty());
+
+    let mut rows: Vec<SessionInfo> = Vec::new();
+    for (gi, g) in group_order.iter().enumerate() {
+        let members: Vec<&Session> = sessions
+            .iter()
+            .filter(|s| &s.group == g && matches(s))
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        // Empty group → "Ungrouped" header, unless every session is ungrouped
+        // (then show a flat list with no header at all).
+        let label = if g.is_empty() {
+            if has_named {
+                crate::i18n::t("未分组", "Ungrouped").to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            g.clone()
+        };
+        let size = members.len() as i32;
+        for s in members {
+            rows.push(SessionInfo {
+                id: s.id.clone().into(),
+                name: s.name.clone().into(),
+                host: s.host.clone().into(),
+                port: s.port as i32,
+                user: s.user.clone().into(),
+                auth: s.auth.as_str().into(),
+                last_used: s
+                    .last_used
+                    .clone()
+                    .unwrap_or_else(|| "never".to_string())
+                    .into(),
+                latency: prev_lat.get(s.id.as_str()).copied().unwrap_or(-1),
+                group_label: label.clone().into(),
+                group_index: gi as i32,
+                group_size: size,
+            });
+        }
+    }
     model.set_vec(rows);
+
+    // Header subtitle — counts over the FULL set, independent of the filter.
+    let total = sessions.len();
+    let click_hint = crate::i18n::t(
+        "点击「连接」建立 SSH 会话",
+        "click Connect to start an SSH session",
+    );
+    let subtitle = if has_named {
+        format!(
+            "{} {} · {} {} · {}",
+            total,
+            crate::i18n::t("个会话", "sessions"),
+            group_order.len(),
+            crate::i18n::t("个分组", "groups"),
+            click_hint,
+        )
+    } else {
+        format!(
+            "{} {} · {}",
+            total,
+            crate::i18n::t("个会话", "sessions"),
+            click_hint
+        )
+    };
+    win.set_session_subtitle(subtitle.into());
 }
 
 /// Measure TCP connect time to `host:port`, in milliseconds.
@@ -638,6 +723,24 @@ fn wire_callbacks(
     last_term_size: Arc<Mutex<(u32, u32)>>,
 ) {
     let sessions_model = models.sessions.clone();
+    let search_filter: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    {
+        let weak = window.as_weak();
+        let search_store = store.clone();
+        let search_sessions = sessions_model.clone();
+        let search_filter = search_filter.clone();
+        window.on_search_changed(move |text: SharedString| {
+            *search_filter.borrow_mut() = text.to_string();
+            if let Some(w) = weak.upgrade() {
+                sync_sessions_to_model(
+                    &w,
+                    &search_store.borrow(),
+                    &search_sessions,
+                    &search_filter.borrow(),
+                );
+            }
+        });
+    }
     let tabs_model = models.tabs.clone();
     let terminals_model = models.terminals.clone();
     let io_ctx = SessionIoCtx {
@@ -732,6 +835,7 @@ fn wire_callbacks(
             w.set_dialog_port("22".into());
             w.set_dialog_user("root".into());
             w.set_dialog_auth("password".into());
+            w.set_dialog_group("".into());
             w.set_dialog_password("".into());
             w.set_dialog_key_path("".into());
             new_test_epoch.fetch_add(1, Ordering::SeqCst);
@@ -744,6 +848,7 @@ fn wire_callbacks(
     let weak = window.as_weak();
     let import_store = store.clone();
     let import_sessions = sessions_model.clone();
+    let import_filter = search_filter.clone();
     window.on_import_ssh_config(move || {
         let hosts = crate::ssh_config::parse_default();
         let mut added = 0usize;
@@ -787,6 +892,7 @@ fn wire_callbacks(
                     private_key_path: h.identity_file,
                     proxy: String::new(),
                     last_used: None,
+                    group: String::new(),
                 });
                 added += 1;
             }
@@ -797,8 +903,13 @@ fn wire_callbacks(
             }
         }
 
-        sync_sessions_to_model(&import_store.borrow(), &import_sessions);
         if let Some(w) = weak.upgrade() {
+            sync_sessions_to_model(
+                &w,
+                &import_store.borrow(),
+                &import_sessions,
+                &import_filter.borrow(),
+            );
             w.invoke_probe_latencies();
             let hint = if added > 0 {
                 format!("{} {}", crate::i18n::t("已导入", "imported"), added)
@@ -825,6 +936,7 @@ fn wire_callbacks(
             w.set_dialog_port(session.port.to_string().into());
             w.set_dialog_user(session.user.clone().into());
             w.set_dialog_auth(session.auth.as_str().into());
+            w.set_dialog_group(session.group.clone().into());
             w.set_dialog_password("".into());
             w.set_dialog_key_path(session.private_key_path.clone().into());
             edit_test_epoch.fetch_add(1, Ordering::SeqCst);
@@ -838,6 +950,7 @@ fn wire_callbacks(
     let weak = window.as_weak();
     let remove_store = store.clone();
     let remove_sessions = sessions_model.clone();
+    let remove_filter = search_filter.clone();
     window.on_remove_session(move |id: SharedString| {
         {
             let mut s = remove_store.borrow_mut();
@@ -847,8 +960,13 @@ fn wire_callbacks(
             }
         }
         crate::secrets::keyring_delete(id.as_ref());
-        sync_sessions_to_model(&remove_store.borrow(), &remove_sessions);
         if let Some(w) = weak.upgrade() {
+            sync_sessions_to_model(
+                &w,
+                &remove_store.borrow(),
+                &remove_sessions,
+                &remove_filter.borrow(),
+            );
             let _ = w.get_sessions();
             w.invoke_probe_latencies();
         }
@@ -857,6 +975,7 @@ fn wire_callbacks(
     let weak = window.as_weak();
     let submit_store = store.clone();
     let submit_sessions = sessions_model.clone();
+    let submit_filter = search_filter.clone();
     window.on_session_dialog_submit(move |draft: SessionDraft| {
         let id = draft.id.to_string();
         let password = if draft.password.is_empty() {
@@ -891,6 +1010,7 @@ fn wire_callbacks(
             private_key_path: draft.private_key_path.to_string().replace('\\', "/"),
             proxy: String::new(),
             last_used: None,
+            group: draft.group.to_string(),
         };
         // 「记住」开关决定是否持久化：不记住→清空；记住+新输入明文→加密成
         // enc:v1: 密文（加密不可用则不持久化，绝不明文落盘）；记住+未改密码
@@ -909,8 +1029,13 @@ fn wire_callbacks(
                 tracing::warn!("failed to save config: {err:#}");
             }
         }
-        sync_sessions_to_model(&submit_store.borrow(), &submit_sessions);
         if let Some(w) = weak.upgrade() {
+            sync_sessions_to_model(
+                &w,
+                &submit_store.borrow(),
+                &submit_sessions,
+                &submit_filter.borrow(),
+            );
             w.set_dialog_open(false);
             w.invoke_probe_latencies();
         }
@@ -968,6 +1093,7 @@ fn wire_callbacks(
             private_key_path: draft.private_key_path.to_string().replace('\\', "/"),
             proxy: String::new(),
             last_used: None,
+            group: draft.group.to_string(),
         };
         // 与正式连接保持一致：编辑时密码留空沿用已存密码、proxy 沿用已存配置；
         // json 密码为空再回查 keyring。
@@ -3589,28 +3715,31 @@ impl TermBuffer {
     }
 }
 
+// GitHub-Dark terminal palette (matched to ui/theme.slint term-bg/term-fg).
+// 0-7 normal, 8-15 bright. Normal green/blue/yellow line up with the design
+// mockup's prompt (#3fb950), links (#58a6ff) and `apt list` hint (#d29922).
 const ANSI16: [(u8, u8, u8); 16] = [
-    (0x00, 0x00, 0x00),
-    (0xcd, 0x31, 0x31),
-    (0x0d, 0xbc, 0x79),
-    (0xe5, 0xe5, 0x10),
-    (0x24, 0x72, 0xc8),
-    (0xbc, 0x3f, 0xbc),
-    (0x11, 0xa8, 0xcd),
-    (0xe5, 0xe5, 0xe5),
-    (0x66, 0x66, 0x66),
-    (0xf1, 0x4c, 0x4c),
-    (0x23, 0xd1, 0x8b),
-    (0xf5, 0xf5, 0x43),
-    (0x3b, 0x8e, 0xea),
-    (0xd6, 0x70, 0xd6),
-    (0x29, 0xb8, 0xdb),
-    (0xff, 0xff, 0xff),
+    (0x48, 0x4f, 0x58), // black
+    (0xff, 0x7b, 0x72), // red
+    (0x3f, 0xb9, 0x50), // green
+    (0xd2, 0x99, 0x22), // yellow
+    (0x58, 0xa6, 0xff), // blue
+    (0xbc, 0x8c, 0xff), // magenta
+    (0x39, 0xc5, 0xcf), // cyan
+    (0xb1, 0xba, 0xc4), // white
+    (0x6e, 0x76, 0x81), // bright black
+    (0xff, 0xa1, 0x98), // bright red
+    (0x56, 0xd3, 0x64), // bright green
+    (0xe3, 0xb3, 0x41), // bright yellow
+    (0x79, 0xc0, 0xff), // bright blue
+    (0xd2, 0xa8, 0xff), // bright magenta
+    (0x56, 0xd4, 0xdd), // bright cyan
+    (0xf0, 0xf6, 0xfc), // bright white
 ];
 
 fn vt_color_to_slint(color: vt100::Color, bold: bool) -> slint::Color {
     let (r, g, b) = match color {
-        vt100::Color::Default => (0xd4, 0xd4, 0xd4),
+        vt100::Color::Default => (0xc9, 0xd1, 0xd9),
         vt100::Color::Idx(i) => idx_to_rgb(i, bold),
         vt100::Color::Rgb(r, g, b) => (r, g, b),
     };

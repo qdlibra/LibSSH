@@ -1,5 +1,8 @@
 // Central design tokens for LibSSH.
-// Keep these aligned with docs/UI guidelines.
+// Palette follows the LibSSH design spec (IBM Plex mockups). The design token
+// names below (bg-main, card, col-head, text, text-dim, …) are the source of
+// truth; the legacy names further down (bg-root, bg-panel, text-primary, …) are
+// kept as aliases so existing pages pick up the new palette without edits.
 
 export global Theme {
     // 0 = follow system, 1 = light, 2 = dark.
@@ -14,34 +17,65 @@ export global Theme {
                                : mode == 1 ? false
                                : system-is-dark;
 
-    // --- Palette -----------------------------------------------------------
-    out property <brush> bg-root: is-dark ? #1b1d23 : #f4f6f8;
-    out property <brush> bg-panel: is-dark ? #23262d : #ffffff;
-    out property <brush> bg-panel-alt: is-dark ? #2a2d35 : #edf1f5;
-    out property <brush> bg-elevated: is-dark ? #30333c : #e6ebf1;
-    out property <brush> bg-hover: is-dark ? #373a44 : #dde4ec;
-    out property <brush> bg-active: is-dark ? #3f4350 : #cfd9e4;
+    // --- Design tokens (light / dark) --------------------------------------
+    out property <brush> bg-app:       is-dark ? #0d0f13 : #e8eaee;
+    out property <brush> bg-sidebar:   is-dark ? #14171d : #f5f6f9;
+    out property <brush> bg-main:      is-dark ? #1a1d24 : #fbfbfc;
+    out property <brush> card:         is-dark ? #1f232b : #ffffff;
+    out property <brush> col-head:     is-dark ? #191c22 : #f6f7fa;
+    out property <brush> title-bar:    is-dark ? #1a1d24 : #eef0f3;
 
-    out property <brush> border-subtle: is-dark ? #3a3d46 : #d4dbe4;
-    out property <brush> border-strong: is-dark ? #4a4e59 : #b9c4d0;
+    out property <brush> border:        is-dark ? #2a2e37 : #e6e8ec;
+    out property <brush> border-strong: is-dark ? #363b46 : #d6d9df;
 
-    out property <brush> text-primary: is-dark ? #e6e8ee : #1f2733;
-    out property <brush> text-secondary: is-dark ? #a8adb8 : #526071;
-    out property <brush> text-muted: is-dark ? #6b6f7a : #8591a0;
+    out property <brush> text:       is-dark ? #e7e9ed : #1b1f24;
+    out property <brush> text-dim:   is-dark ? #99a1ad : #5a626d;
+    out property <brush> text-faint: is-dark ? #646b76 : #9099a4;
 
-    out property <brush> accent: is-dark ? #4a90e2 : #256ec1;
-    out property <brush> accent-hover: is-dark ? #5aa0f2 : #2f7ed6;
-    out property <brush> accent-pressed: is-dark ? #3a80d2 : #1f5fab;
+    out property <brush> track:      is-dark ? #2a2f38 : #e9ebef;
+    out property <brush> row-hover:  is-dark ? #23272f : #f3f4f7;
+    out property <brush> seg-track:  is-dark ? #23272f : #e6e8ec;
+    out property <brush> seg-active: is-dark ? #363c47 : #ffffff;
 
-    out property <brush> success: is-dark ? #4ec9b0 : #168c74;
-    out property <brush> warning: is-dark ? #e2a84a : #b26f00;
-    out property <brush> danger: is-dark ? #e25c5c : #c23a3a;
+    out property <brush> ok:          is-dark ? #3fb950 : #16a34a;
+    out property <brush> ok-soft:     is-dark ? #10261a : #e7f6ec;
+    out property <brush> warn:        is-dark ? #d29922 : #c2740a;
+    out property <brush> warn-soft:   is-dark ? #2a2113 : #fbeede;
+    out property <brush> danger:      is-dark ? #f85149 : #dc2626;
+    out property <brush> danger-soft: is-dark ? #2d1717 : #fbeaea;
 
-    // Windows 风格暖黄文件夹图标色（亮暗主题同值）。
-    out property <brush> folder-icon: #f7c948;
+    out property <brush> accent:       is-dark ? #4493f8 : #2563eb;
+    out property <brush> accent-soft:  is-dark ? #15263d : #eaf1ff;
+    out property <brush> accent-hover: is-dark ? #5aa0fa : #1d4ed8;
+    out property <brush> accent-pressed: is-dark ? #3a7fd6 : #1a3fb0;
 
-    out property <brush> term-bg: #0e0f13;
-    out property <brush> term-fg: #d4d4d4;
+    // Warm folder/icon tint for the file browser (light/dark variant).
+    out property <brush> folder: is-dark ? #e3b341 : #d99b22;
+
+    out property <color> shadow-color: is-dark ? #00000099 : #0f141e2e;
+
+    // Terminal is always dark (GitHub-Dark palette, matched to src/app.rs ANSI16).
+    out property <brush> term-bg: #0d1117;
+    out property <brush> term-fg: #c9d1d9;
+
+    // --- Legacy aliases (kept so existing pages adopt the new palette) ------
+    out property <brush> bg-root:      bg-main;
+    out property <brush> bg-panel:     card;
+    out property <brush> bg-panel-alt: seg-track;
+    out property <brush> bg-elevated:  track;
+    out property <brush> bg-hover:     row-hover;
+    out property <brush> bg-active:    track;
+
+    out property <brush> border-subtle: border;
+
+    out property <brush> text-primary:   text;
+    out property <brush> text-secondary: text-dim;
+    out property <brush> text-muted:     text-faint;
+
+    out property <brush> success: ok;
+    out property <brush> warning: warn;
+
+    out property <brush> folder-icon: folder;
 
     // --- Typography --------------------------------------------------------
     out property <length> fs-xs: 11px;
