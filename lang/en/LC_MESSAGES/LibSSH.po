@@ -350,3 +350,9 @@ msgstr "Servers are grouped in this order on the quick-connect page."
 
 msgid "New connection"
 msgstr "New connection"
+
+msgid "Remember password (encrypted on this machine)"
+msgstr "Remember password (encrypted on this machine)"
+
+msgid "Not tested"
+msgstr "<Not tested>"

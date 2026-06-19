@@ -55,7 +55,7 @@ export component SessionDialog inherits Rectangle {
 
     Rectangle {
         width: 420px;
-        height: 560px;
+        height: 580px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: Theme.bg-panel;
@@ -354,18 +354,29 @@ export component SessionDialog inherits Rectangle {
                 }
             }
 
-            Rectangle { vertical-stretch: 1; }
-
-            // Connectivity test result (hidden until the first probe)
-            if root.test-status != "idle" : Text {
-                text: root.test-status == "ok" ? "✓ " + root.test-message
-                    : root.test-status == "fail" ? "✗ " + root.test-message
-                    : root.test-message;
-                color: root.test-status == "ok" ? Theme.success
-                    : root.test-status == "fail" ? Theme.danger
-                    : Theme.text-secondary;
-                font-size: Theme.fs-sm;
-                wrap: word-wrap;
+            // Connectivity test result — 始终预留的固定展示区，取代原先的占位 spacer。
+            // 它固定占据输入区与按钮之间的剩余空间：测试结果出现/消失或长短变化都不会
+            // 改变布局总高，按钮不会被挤出窗口。idle 时显示灰色占位文字「<未测试>」。
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: 34px;
+                clip: true;
+                VerticalLayout {
+                    Text {
+                        text: root.test-status == "ok" ? "✓ " + root.test-message
+                            : root.test-status == "fail" ? "✗ " + root.test-message
+                            : root.test-status == "testing" ? root.test-message
+                            : @tr("Not tested");
+                        color: root.test-status == "ok" ? Theme.success
+                            : root.test-status == "fail" ? Theme.danger
+                            : root.test-status == "testing" ? Theme.text-secondary
+                            : Theme.text-muted;
+                        font-size: Theme.fs-sm;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        vertical-alignment: top;
+                    }
+                }
             }
 
             HorizontalLayout {

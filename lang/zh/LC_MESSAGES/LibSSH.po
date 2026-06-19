@@ -55,10 +55,10 @@ msgid "Open-source libraries used"
 msgstr "使用的开源库"
 
 msgid "Edit session"
-msgstr "编辑会话"
+msgstr "编辑连接"
 
 msgid "New session"
-msgstr "新建会话"
+msgstr "新建连接"
 
 msgid "Name"
 msgstr "名称"
@@ -196,22 +196,22 @@ msgid "Connect"
 msgstr "连接"
 
 msgid "Delete session"
-msgstr "删除会话"
+msgstr "删除连接"
 
 msgid "Delete this session from quick connect?"
-msgstr "确定从快速连接中删除此会话？"
+msgstr "确定从快速连接中删除此连接？"
 
 msgid "OK"
 msgstr "确定"
 
 msgid "+ New session"
-msgstr "+ 新建会话"
+msgstr "+ 新建连接"
 
 msgid "No sessions yet"
-msgstr "尚无会话"
+msgstr "尚无连接"
 
 msgid "Use 'New session' (top-right) to add your first server"
-msgstr "点击右上角 “新建会话” 添加你的第一台服务器"
+msgstr "点击右上角 “新建连接” 添加你的第一台服务器"
 
 msgid "Import ~/.ssh/config"
 msgstr "导入 ~/.ssh/config"
@@ -325,7 +325,7 @@ msgid "Actions"
 msgstr "操作"
 
 msgid "Search sessions…"
-msgstr "搜索会话…"
+msgstr "搜索连接…"
 
 msgid "Group"
 msgstr "分组"
@@ -350,3 +350,9 @@ msgstr "快速连接页将按此顺序分组展示服务器。"
 
 msgid "New connection"
 msgstr "新建连接"
+
+msgid "Remember password (encrypted on this machine)"
+msgstr "记住密码（在本机加密存储）"
+
+msgid "Not tested"
+msgstr "<未测试>"

@@ -648,14 +648,14 @@ fn sync_sessions_to_model(
         })
         .count();
     let click_hint = crate::i18n::t(
-        "点击「连接」建立 SSH 会话",
+        "点击「连接」建立 SSH 连接",
         "click Connect to start an SSH session",
     );
     let subtitle = if has_named {
         format!(
             "{} {} · {} {} · {}",
             total,
-            crate::i18n::t("个会话", "sessions"),
+            crate::i18n::t("个连接", "sessions"),
             group_count,
             crate::i18n::t("个分组", "groups"),
             click_hint,
@@ -664,7 +664,7 @@ fn sync_sessions_to_model(
         format!(
             "{} {} · {}",
             total,
-            crate::i18n::t("个会话", "sessions"),
+            crate::i18n::t("个连接", "sessions"),
             click_hint
         )
     };
