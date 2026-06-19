@@ -1567,7 +1567,9 @@ fn wire_callbacks(
                     if let Some(t) = trackers.lock().unwrap().get_mut(&tab_id) {
                         t.feed_paste(&text);
                     }
-                    let _ = sender.send(SessionCommand::RawInput(text.into_bytes()));
+                    let _ = sender.send(SessionCommand::RawInput(
+                        normalize_pasted_newlines(&text).into_bytes(),
+                    ));
                 }
                 Err(err) => tracing::warn!("paste_from_clipboard failed: {err}"),
             }
@@ -3640,6 +3642,17 @@ fn idx_to_rgb(i: u8, bold: bool) -> (u8, u8, u8) {
             (v, v, v)
         }
     }
+}
+
+/// 把粘贴文本里的换行统一折叠成单个回车（CR，`\r`）。
+///
+/// 剪贴板换行可能是 CRLF（Windows）、LF（Unix）或已是 CR。远端 shell 以 CR 作为
+/// 行提交信号；若把 LF 或 CRLF 原样发去，多行命令每行会触发两个换行，反斜杠续行
+/// （`\<newline>`）被提前结束，导致后续行丢失或被当成独立命令执行。统一折叠为单个
+/// CR 后，每个换行只提交一次，续行语义保持完整。
+fn normalize_pasted_newlines(text: &str) -> String {
+    // 先折 CRLF→CR，再把残留的独立 LF→CR；已是单个 CR 的保持不变。
+    text.replace("\r\n", "\r").replace('\n', "\r")
 }
 
 #[cfg(test)]
