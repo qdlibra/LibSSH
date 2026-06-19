@@ -356,3 +356,12 @@ msgstr "记住密码（在本机加密存储）"
 
 msgid "Not tested"
 msgstr "<未测试>"
+
+msgid "Jump host (via saved session)"
+msgstr "跳板机（经已保存会话）"
+
+msgid "Direct (no jump)"
+msgstr "直连（不经跳板）"
+
+msgid "Local forwards (one per line: [bind:]port:host:port)"
+msgstr "本地转发（每行一条：[bind:]端口:主机:端口）"

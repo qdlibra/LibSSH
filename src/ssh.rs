@@ -193,6 +193,12 @@ pub enum SessionEvent {
         state: u8,
         msg: String,
     },
+    /// 端口转发监听状态：listening=true 表示已开始监听，false 表示绑定失败。
+    TunnelStatus {
+        spec: String,
+        listening: bool,
+        msg: String,
+    },
 }
 
 pub struct SessionHandle {
@@ -447,11 +453,58 @@ pub fn spawn_session(
     )
 }
 
+/// 连接并认证一个会话（直连/代理），返回**已认证**的 Handle。用于跳板机：
+/// 跳板自身必须先认证，才能在其上开到目标的 direct-tcpip 通道。
+async fn connect_and_auth(
+    session: &Session,
+    config: Arc<client::Config>,
+) -> Result<Handle<ClientHandler>> {
+    let handler = ClientHandler {
+        host: session.host.clone(),
+        port: session.port,
+    };
+    let addr = format!("{}:{}", session.host, session.port);
+    let mut handle = match crate::proxy::resolve(&session.proxy) {
+        Some(proxy) => {
+            let stream = crate::proxy::connect(&proxy, &session.host, session.port)
+                .await
+                .with_context(|| format!("jump proxy connect to {} failed", addr))?;
+            client::connect_stream(config, stream, handler)
+                .await
+                .with_context(|| format!("jump connect {} failed", addr))?
+        }
+        None => client::connect(config, addr.as_str(), handler)
+            .await
+            .with_context(|| format!("jump connect {} failed", addr))?,
+    };
+
+    let authed = match session.auth {
+        AuthMethod::Password => handle
+            .authenticate_password(&session.user, session.password.as_str())
+            .await
+            .context("jump password auth failed")?,
+        AuthMethod::Key => {
+            let key_with_hash = load_private_key_for_auth(&session.private_key_path)?;
+            handle
+                .authenticate_publickey(&session.user, key_with_hash)
+                .await
+                .context("jump publickey auth failed")?
+        }
+    };
+    if !authed {
+        let _ = handle
+            .disconnect(Disconnect::ByApplication, "jump auth failed", "")
+            .await;
+        bail!(t("跳板机认证失败", "jump host authentication failed"));
+    }
+    Ok(handle)
+}
+
 /// 建立到目标的**未认证**传输 Handle。第二项为需在整个会话期间保活的跳板 Handle
-/// （直连/代理时为 None；跳板逻辑在后续任务接入）。
+/// （直连/代理时为 None；经跳板时为已认证的跳板 Handle，其生命周期须贯穿会话）。
 async fn connect_transport(
     session: &Session,
-    _jump: &Option<Session>,
+    jump: &Option<Session>,
     config: Arc<client::Config>,
     events: &UnboundedSender<SessionEvent>,
 ) -> Result<(Handle<ClientHandler>, Option<Handle<ClientHandler>>)> {
@@ -460,6 +513,30 @@ async fn connect_transport(
         port: session.port,
     };
     let addr = format!("{}:{}", session.host, session.port);
+
+    // 跳板机：先连+认证跳板，再在其上开到目标的 direct-tcpip，把通道流当作传输层连目标。
+    if let Some(j) = jump {
+        let _ = events.send(SessionEvent::Status(format!(
+            "{} {}@{}:{} -> {}",
+            t("经跳板机连接", "via jump host"),
+            j.user,
+            j.host,
+            j.port,
+            addr
+        )));
+        let jump_handle = connect_and_auth(j, Arc::new(client::Config::default())).await?;
+        let channel = jump_handle
+            .channel_open_direct_tcpip(session.host.clone(), session.port as u32, "127.0.0.1", 0)
+            .await
+            .with_context(|| format!("jump direct-tcpip to {} failed", addr))?;
+        let stream = channel.into_stream();
+        let handle = client::connect_stream(config, stream, handler)
+            .await
+            .with_context(|| format!("connect {} via jump failed", addr))?;
+        return Ok((handle, Some(jump_handle)));
+    }
+
+    // 直连 / 代理。
     let handle = match crate::proxy::resolve(&session.proxy) {
         Some(proxy) => {
             let _ = events.send(SessionEvent::Status(format!(
@@ -562,6 +639,64 @@ async fn run_session(
         session.user,
         session.host
     )));
+
+    // 本地端口转发（-L）：每条隧道起一个 acceptor 子任务（只 bind+accept+回传，
+    // 不碰 handle），接受到的连接经 mpsc 回到本任务串行开 direct-tcpip 通道。
+    let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel::<ForwardReq>();
+    let mut tunnel_acceptors: Vec<JoinHandle<()>> = Vec::new();
+    let mut pump_tasks: Vec<JoinHandle<()>> = Vec::new();
+    for spec in &session.tunnels {
+        let bind_addr = if spec.bind_addr.is_empty() {
+            "127.0.0.1"
+        } else {
+            spec.bind_addr.as_str()
+        };
+        let listen = format!("{}:{}", bind_addr, spec.bind_port);
+        match tokio::net::TcpListener::bind(&listen).await {
+            Ok(listener) => {
+                let _ = events.send(SessionEvent::TunnelStatus {
+                    spec: spec.to_line(),
+                    listening: true,
+                    msg: format!("{} {}", t("本地转发监听", "forwarding on"), listen),
+                });
+                let tx = fwd_tx.clone();
+                let dest_host = spec.dest_host.clone();
+                let dest_port = spec.dest_port;
+                tunnel_acceptors.push(tokio::spawn(async move {
+                    loop {
+                        match listener.accept().await {
+                            Ok((stream, peer)) => {
+                                if tx
+                                    .send(ForwardReq {
+                                        stream,
+                                        peer,
+                                        dest_host: dest_host.clone(),
+                                        dest_port,
+                                    })
+                                    .is_err()
+                                {
+                                    break; // run_session 已退出
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("tunnel accept error on {listen}: {e}");
+                                break;
+                            }
+                        }
+                    }
+                }));
+            }
+            Err(e) => {
+                let _ = events.send(SessionEvent::TunnelStatus {
+                    spec: spec.to_line(),
+                    listening: false,
+                    msg: format!("{}: {e}", t("本地转发监听失败", "forward bind failed")),
+                });
+            }
+        }
+    }
+    // 仅留各 acceptor 持有的 sender 克隆；它们全部退出后 fwd_rx 自然结束。
+    drop(fwd_tx);
 
     let mut prompt_injected = false;
     let mut echo_suppressor = EchoSuppressor::new();
@@ -678,7 +813,39 @@ async fn run_session(
                     _ => {}
                 }
             }
+            maybe_fwd = fwd_rx.recv() => {
+                if let Some(req) = maybe_fwd {
+                    // handle 为 &self 调用，串行开通道；await 期间由 russh 会话任务驱动应答，不阻塞本循环。
+                    match handle
+                        .channel_open_direct_tcpip(
+                            req.dest_host.clone(),
+                            req.dest_port as u32,
+                            req.peer.ip().to_string(),
+                            req.peer.port() as u32,
+                        )
+                        .await
+                    {
+                        Ok(channel) => {
+                            pump_tasks.push(tokio::spawn(pump_forward(req.stream, channel)));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "direct-tcpip to {}:{} failed: {e}",
+                                req.dest_host,
+                                req.dest_port
+                            );
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    for h in tunnel_acceptors {
+        h.abort();
+    }
+    for h in pump_tasks {
+        h.abort();
     }
 
     let _ = handle
@@ -688,6 +855,22 @@ async fn run_session(
         t("连接已关闭", "connection closed").into(),
     ));
     Ok(())
+}
+
+/// 一条「本地监听口接到的连接」请求，由 acceptor 子任务发回 run_session 主任务，
+/// 后者用独占的 handle 串行开 direct-tcpip 通道。
+struct ForwardReq {
+    stream: tokio::net::TcpStream,
+    peer: std::net::SocketAddr,
+    dest_host: String,
+    dest_port: u16,
+}
+
+/// 在本地 TCP 连接与 SSH direct-tcpip 通道之间双向搬运字节，直到任一端关闭。
+/// `ChannelStream` 自动 `Unpin + Send`，可安全移入独立任务并参与 copy_bidirectional。
+async fn pump_forward(mut tcp: tokio::net::TcpStream, channel: russh::Channel<client::Msg>) {
+    let mut chan = channel.into_stream();
+    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut chan).await;
 }
 
 fn parse_monitor_block(

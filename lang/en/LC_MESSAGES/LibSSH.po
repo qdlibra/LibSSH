@@ -356,3 +356,12 @@ msgstr "Remember password (encrypted on this machine)"
 
 msgid "Not tested"
 msgstr "<Not tested>"
+
+msgid "Jump host (via saved session)"
+msgstr "Jump host (via saved session)"
+
+msgid "Direct (no jump)"
+msgstr "Direct (no jump)"
+
+msgid "Local forwards (one per line: [bind:]port:host:port)"
+msgstr "Local forwards (one per line: [bind:]port:host:port)"

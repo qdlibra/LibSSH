@@ -13,6 +13,8 @@ export struct SessionDraft {
     password: string,
     private-key-path: string,
     remember: bool,    // 勾选则把密码机器绑定加密存本地
+    jump-session-id: string,   // "" = 不经跳板；否则为跳板会话的 id
+    tunnels-text: string,      // 每行一条本地转发 [bind:]port:host:port
 }
 
 // Modal dialog for creating / editing an SSH session.
@@ -32,6 +34,9 @@ export component SessionDialog inherits Rectangle {
     in-out property <string> draft-password;
     in-out property <bool> draft-remember: true;
     in-out property <string> draft-key-path;
+    in-out property <string> draft-jump-session-id;
+    in-out property <string> draft-tunnels-text;
+    in property <[GroupInfo]> jump-candidates;   // name=会话 id，label=会话名（除当前会话外）
     // Connectivity test state, driven from Rust: "idle" | "testing" | "ok" | "fail"
     in-out property <string> test-status: "idle";
     in-out property <string> test-message;
@@ -55,7 +60,7 @@ export component SessionDialog inherits Rectangle {
 
     Rectangle {
         width: 420px;
-        height: 580px;
+        height: 740px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: Theme.bg-panel;
@@ -354,9 +359,151 @@ export component SessionDialog inherits Rectangle {
                 }
             }
 
+            // 跳板机（经已保存会话，可选）
+            VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: @tr("Jump host (via saved session)");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                }
+                Rectangle {
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: jmp-ta.has-hover ? Theme.border-strong : Theme.border-subtle;
+                    background: Theme.bg-root;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        // 折叠态：空=直连；否则显示所选候选的「会话名」。用 clip 而非 elide，
+                        // 避免纯中文会话名被整词丢弃（见 elide 吃 CJK 的已知问题）。
+                        if root.draft-jump-session-id == "" : Text {
+                            text: @tr("Direct (no jump)");
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-md;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: clip;
+                        }
+                        for c in root.jump-candidates : Text {
+                            text: c.name == root.draft-jump-session-id ? c.label : "";
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-md;
+                            vertical-alignment: center;
+                            horizontal-stretch: c.name == root.draft-jump-session-id ? 1 : 0;
+                            overflow: clip;
+                        }
+                        Text {
+                            text: "\u{E5CF}";   // expand_more
+                            font-family: "Material Icons";
+                            color: Theme.text-muted;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    jmp-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { jmp-pop.show(); }
+                    }
+                    jmp-pop := PopupWindow {
+                        x: 0;
+                        y: parent.height + 2px;
+                        width: parent.width;
+                        height: min(root.jump-candidates.length + 1, 8) * 29px + 8px;
+                        Rectangle {
+                            background: Theme.bg-panel;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: Theme.border-strong;
+                            drop-shadow-blur: 14px;
+                            drop-shadow-color: Theme.shadow-color;
+                            VerticalLayout {
+                                padding: 4px;
+                                spacing: 1px;
+                                Rectangle {
+                                    height: 28px;
+                                    border-radius: 4px;
+                                    background: jn-ta.has-hover ? Theme.bg-hover : transparent;
+                                    Text {
+                                        x: 8px;
+                                        text: @tr("Direct (no jump)");
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-md;
+                                        vertical-alignment: center;
+                                    }
+                                    jn-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.draft-jump-session-id = ""; jmp-pop.close(); }
+                                    }
+                                }
+                                for c in root.jump-candidates : Rectangle {
+                                    height: 28px;
+                                    border-radius: 4px;
+                                    background: jc-ta.has-hover ? Theme.bg-hover : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 8px;
+                                        Text {
+                                            text: c.label;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.fs-md;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                            overflow: clip;
+                                        }
+                                        if c.name == root.draft-jump-session-id : Text {
+                                            text: "\u{E5CA}";   // check
+                                            font-family: "Material Icons";
+                                            color: Theme.accent;
+                                            font-size: 16px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    jc-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.draft-jump-session-id = c.name; jmp-pop.close(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 本地端口转发（每行一条 [bind:]port:host:port）
+            VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: @tr("Local forwards (one per line: [bind:]port:host:port)");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                }
+                Rectangle {
+                    height: 56px;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: tin.has-focus ? Theme.accent : Theme.border-subtle;
+                    background: Theme.bg-root;
+                    tin := TextInput {
+                        x: 10px;
+                        y: 6px;
+                        width: parent.width - 20px;
+                        height: parent.height - 12px;
+                        text <=> root.draft-tunnels-text;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-md;
+                        single-line: false;
+                        wrap: no-wrap;
+                    }
+                }
+            }
+
             // Connectivity test result — 始终预留的固定展示区，取代原先的占位 spacer。
-            // 它固定占据输入区与按钮之间的剩余空间：测试结果出现/消失或长短变化都不会
-            // 改变布局总高，按钮不会被挤出窗口。idle 时显示灰色占位文字「<未测试>」。
+            // 固定占据输入区与按钮之间的剩余空间：测试结果出现/消失或长短变化都不改变
+            // 布局总高，按钮不会被挤出窗口。idle 时显示灰色占位「<未测试>」。
             Rectangle {
                 vertical-stretch: 1;
                 min-height: 34px;
@@ -396,6 +543,8 @@ export component SessionDialog inherits Rectangle {
                                 password: root.draft-password,
                                 private-key-path: root.draft-key-path,
                                 remember: root.draft-remember,
+                                jump-session-id: root.draft-jump-session-id,
+                                tunnels-text: root.draft-tunnels-text,
                             });
                         }
                     }
@@ -419,6 +568,8 @@ export component SessionDialog inherits Rectangle {
                             password: root.draft-password,
                             private-key-path: root.draft-key-path,
                             remember: root.draft-remember,
+                            jump-session-id: root.draft-jump-session-id,
+                            tunnels-text: root.draft-tunnels-text,
                         });
                     }
                 }

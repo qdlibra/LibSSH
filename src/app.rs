@@ -696,6 +696,25 @@ fn sync_groups_to_model(store: &ConfigStore, window: &AppWindow) {
     window.set_groups(ModelRc::from(Rc::new(VecModel::from(rows))));
 }
 
+/// 构造「跳板候选」模型：除 `current_id` 外的所有已存会话，name=会话 id、label=会话名。
+/// 复用 GroupInfo 承载（color/has_color/is_default 对跳板下拉无意义，取默认）。
+fn jump_candidates_model(store: &ConfigStore, current_id: &str) -> ModelRc<GroupInfo> {
+    let (color, _) = group_brush("");
+    let rows: Vec<GroupInfo> = store
+        .sessions()
+        .iter()
+        .filter(|s| s.id.as_str() != current_id)
+        .map(|s| GroupInfo {
+            name: s.id.clone().into(),
+            label: s.name.clone().into(),
+            color: color.clone(),
+            has_color: false,
+            is_default: false,
+        })
+        .collect();
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
 /// Measure TCP connect time to `host:port`, in milliseconds.
 /// `-2` signals unreachable / timed out (caller renders it red).
 async fn measure_latency(host: &str, port: u16) -> i32 {
@@ -883,6 +902,7 @@ fn wire_callbacks(
 
     let weak = window.as_weak();
     let new_test_epoch = test_epoch.clone();
+    let new_session_store = store.clone();
     window.on_new_session_clicked(move || {
         if let Some(w) = weak.upgrade() {
             let empty = Session::new_empty();
@@ -896,6 +916,9 @@ fn wire_callbacks(
             w.set_dialog_group("".into());
             w.set_dialog_password("".into());
             w.set_dialog_key_path("".into());
+            w.set_dialog_jump_session_id("".into());
+            w.set_dialog_tunnels_text("".into());
+            w.set_dialog_jump_candidates(jump_candidates_model(&new_session_store.borrow(), ""));
             new_test_epoch.fetch_add(1, Ordering::SeqCst);
             w.set_dialog_test_status("idle".into());
             w.set_dialog_test_message("".into());
@@ -951,6 +974,8 @@ fn wire_callbacks(
                     proxy: String::new(),
                     last_used: None,
                     group: String::new(),
+                    tunnels: Vec::new(),
+                    jump_session_id: None,
                 });
                 added += 1;
             }
@@ -997,6 +1022,19 @@ fn wire_callbacks(
             w.set_dialog_group(session.group.clone().into());
             w.set_dialog_password("".into());
             w.set_dialog_key_path(session.private_key_path.clone().into());
+            w.set_dialog_jump_session_id(
+                session.jump_session_id.clone().unwrap_or_default().into(),
+            );
+            w.set_dialog_tunnels_text(
+                session
+                    .tunnels
+                    .iter()
+                    .map(|t| t.to_line())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .into(),
+            );
+            w.set_dialog_jump_candidates(jump_candidates_model(&store, &session.id));
             edit_test_epoch.fetch_add(1, Ordering::SeqCst);
             w.set_dialog_test_status("idle".into());
             w.set_dialog_test_message("".into());
@@ -1069,6 +1107,15 @@ fn wire_callbacks(
             proxy: String::new(),
             last_used: None,
             group: draft.group.to_string(),
+            tunnels: crate::config::parse_tunnel_lines(draft.tunnels_text.as_ref()),
+            jump_session_id: {
+                let j = draft.jump_session_id.to_string();
+                if j.is_empty() {
+                    None
+                } else {
+                    Some(j)
+                }
+            },
         };
         // 「记住」开关决定是否持久化：不记住→清空；记住+新输入明文→加密成
         // enc:v1: 密文（加密不可用则不持久化，绝不明文落盘）；记住+未改密码
@@ -1152,6 +1199,15 @@ fn wire_callbacks(
             proxy: String::new(),
             last_used: None,
             group: draft.group.to_string(),
+            tunnels: crate::config::parse_tunnel_lines(draft.tunnels_text.as_ref()),
+            jump_session_id: {
+                let j = draft.jump_session_id.to_string();
+                if j.is_empty() {
+                    None
+                } else {
+                    Some(j)
+                }
+            },
         };
         // 与正式连接保持一致：编辑时密码留空沿用已存密码、proxy 沿用已存配置；
         // json 密码为空再回查 keyring。
@@ -1215,6 +1271,11 @@ fn wire_callbacks(
             // spawn_sftp / 重连映射拿到的都是已解析副本。
             crate::secrets::resolve_session_password(&mut session);
             let session = session;
+            // 解析跳板会话（引用另一个已存会话）；克隆后解密其密码，仅用于本次连接。
+            let jump = connect_store.borrow().resolve_jump(&session).map(|mut j| {
+                crate::secrets::resolve_session_password(&mut j);
+                j
+            });
             let tab_id = format!("term-{}", uuid::Uuid::new_v4());
             connect_tab_sessions
                 .borrow_mut()
@@ -1288,6 +1349,7 @@ fn wire_callbacks(
                 &connect_ctx,
                 tab_id,
                 session,
+                jump,
                 initial_cols,
                 initial_rows,
             );
@@ -1511,6 +1573,7 @@ fn wire_callbacks(
     // 就地重连：手动按钮与自动重连定时器共用入口。终端缓冲 / 回看历史 /
     // SFTP 面板状态全部保留，只重建 SSH + SFTP 两条连接。
     let rc_ctx = io_ctx.clone();
+    let rc_store = store.clone();
     let rc_sessions = tab_sessions.clone();
     let rc_last_size = last_term_size.clone();
     let weak = window.as_weak();
@@ -1543,7 +1606,12 @@ fn wire_callbacks(
             });
         }
         let (cols, rows) = *rc_last_size.lock().unwrap();
-        start_session_io(weak.clone(), &rc_ctx, tab_id, session, cols, rows);
+        // 解析跳板会话（引用另一个已存会话）；克隆后解密其密码，仅用于本次连接。
+        let jump = rc_store.borrow().resolve_jump(&session).map(|mut j| {
+            crate::secrets::resolve_session_password(&mut j);
+            j
+        });
+        start_session_io(weak.clone(), &rc_ctx, tab_id, session, jump, cols, rows);
     });
 
     let weak = window.as_weak();
@@ -2776,6 +2844,7 @@ fn start_session_io(
     ctx: &SessionIoCtx,
     tab_id: String,
     session: Session,
+    jump: Option<Session>,
     initial_cols: u32,
     initial_rows: u32,
 ) {
@@ -2784,7 +2853,7 @@ fn start_session_io(
         ctx.runtime.handle(),
         tab_id.clone(),
         session,
-        None,
+        jump,
         initial_cols,
         initial_rows,
     );
@@ -2950,6 +3019,10 @@ fn apply_session_event_to_window(
     match event {
         SessionEvent::Status(status) => {
             update_terminal(&|t| t.status = status.clone().into());
+        }
+        SessionEvent::TunnelStatus { msg, .. } => {
+            // 端口转发监听状态：复用终端状态行提示（UI 细化留后续任务）。
+            update_terminal(&|t| t.status = msg.clone().into());
         }
         SessionEvent::Output(chunk) => {
             let built = {
