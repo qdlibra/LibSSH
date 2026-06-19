@@ -3647,6 +3647,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normalize_pasted_newlines_folds_crlf_and_lf_to_cr() {
+        // 多行/续行命令粘贴：剪贴板的 CRLF(Windows)或 LF 必须折叠成单个 CR，
+        // 否则远端 shell 每行看到两个换行，反斜杠续行被提前结束、后续行丢失。
+        assert_eq!(normalize_pasted_newlines("a\nb\nc"), "a\rb\rc");
+        assert_eq!(
+            normalize_pasted_newlines("sudo apt install \\\r\n  docker-ce"),
+            "sudo apt install \\\r  docker-ce"
+        );
+        // 已是单个 CR 的原样保留，不重复处理。
+        assert_eq!(normalize_pasted_newlines("a\rb"), "a\rb");
+        // 无换行原样返回。
+        assert_eq!(normalize_pasted_newlines("echo hi"), "echo hi");
+    }
+
+    #[test]
     fn wide_chars_render_without_padding_spaces() {
         // 中文（CJK 全角字符）在 vt100 网格里占两格：第 1 格存字符本身，第 2 格
         // 是「宽字符延续格」，其 contents() 为空字符串。该延续格不能被补成半角

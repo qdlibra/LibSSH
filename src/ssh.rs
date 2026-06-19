@@ -530,7 +530,10 @@ async fn run_session(
     let mut prompt_injected = false;
     let mut echo_suppressor = EchoSuppressor::new();
 
-    const MON_CMD: &[u8] = b"while :; do awk '/^cpu /{print}' /proc/stat; awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/{print}' /proc/meminfo; cat /proc/net/dev; echo __DF__; df -kP 2>/dev/null; echo __MSTICK__; sleep 2; done\n";
+    // 先把 PATH 重置为标准系统目录(#27 防护)：监控跑在 exec 通道上，被劫持 PATH
+    // (或指向恶意文件的 BASH_ENV)的服务器否则可用任意二进制顶替 awk/cat/df/sleep。
+    // 固定 PATH 覆盖 /usr/bin 与 /bin 比逐个硬编码绝对路径更可移植；监控本就尽力而为。
+    const MON_CMD: &[u8] = b"PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH; while :; do awk '/^cpu /{print}' /proc/stat; awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/{print}' /proc/meminfo; cat /proc/net/dev; echo __DF__; df -kP 2>/dev/null; echo __MSTICK__; sleep 2; done\n";
     let mut mon_channel = match handle.channel_open_session().await {
         Ok(ch) => match ch.exec(true, MON_CMD).await {
             Ok(()) => Some(ch),
@@ -625,6 +628,13 @@ async fn run_session(
                                 let _ = events.send(stats);
                             }
                         }
+                        // 限制残留(未完成)尾部：只发数据、永不发 __MSTICK__ 标记的
+                        // 服务器不得让缓冲无限增长(内存 DoS, #27)。真实样本仅几 KiB，
+                        // 1 MiB 是宽松上限。
+                        const MON_BUF_CAP: usize = 1 << 20;
+                        if mon_buf.len() > MON_BUF_CAP {
+                            mon_buf.clear();
+                        }
                     }
                     Some(ChannelMsg::Close) | None => {
                         mon_channel = None;
@@ -661,14 +671,20 @@ fn parse_monitor_block(
     let mut disks: Vec<(String, u64, u64)> = Vec::new();
     let mut in_df = false;
 
+    // 限制单次采样接受的网卡/文件系统行数，使恶意服务器无法用伪造行洪流拖垮
+    // 解析与侧栏(#27)。真实机器远不及此数。
+    const MAX_MON_ENTRIES: usize = 64;
+
     for line in block.lines() {
         if line == "__DF__" {
             in_df = true;
             continue;
         }
         if in_df {
-            if let Some(d) = parse_df_line(line) {
-                disks.push(d);
+            if disks.len() < MAX_MON_ENTRIES {
+                if let Some(d) = parse_df_line(line) {
+                    disks.push(d);
+                }
             }
             continue;
         }
@@ -678,8 +694,9 @@ fn parse_monitor_block(
                 .filter_map(|x| x.parse().ok())
                 .collect();
             if nums.len() >= 4 {
-                cpu_total = nums.iter().sum();
-                cpu_idle = nums[3] + nums.get(4).copied().unwrap_or(0);
+                // 饱和运算：服务器可发任意 jiffy 值，普通求和/加法在 debug 下会溢出 panic(#27)。
+                cpu_total = nums.iter().copied().fold(0u64, u64::saturating_add);
+                cpu_idle = nums[3].saturating_add(nums.get(4).copied().unwrap_or(0));
                 have_cpu = true;
             }
         } else if let Some(v) = line.strip_prefix("MemTotal:") {
@@ -690,8 +707,10 @@ fn parse_monitor_block(
             swap_total = parse_meminfo_kib(v);
         } else if let Some(v) = line.strip_prefix("SwapFree:") {
             swap_free = parse_meminfo_kib(v);
-        } else if let Some((iface, counters)) = parse_net_dev_line(line) {
-            net_now.push((iface, counters.0, counters.1));
+        } else if net_now.len() < MAX_MON_ENTRIES {
+            if let Some((iface, counters)) = parse_net_dev_line(line) {
+                net_now.push((iface, counters.0, counters.1));
+            }
         }
     }
 
@@ -758,7 +777,12 @@ fn parse_df_line(line: &str) -> Option<(String, u64, u64)> {
     if total_kb == 0 {
         return None;
     }
-    Some((f[5..].join(" "), avail_kb * 1024, total_kb * 1024))
+    // 饱和：服务器可报任意块数，KiB→字节不得在 debug 下溢出 panic(#27)。
+    Some((
+        f[5..].join(" "),
+        avail_kb.saturating_mul(1024),
+        total_kb.saturating_mul(1024),
+    ))
 }
 
 fn parse_meminfo_kib(s: &str) -> u64 {
