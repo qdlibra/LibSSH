@@ -196,6 +196,12 @@ pub struct Session {
     /// User-defined group/folder label for the connection list. Empty = ungrouped.
     #[serde(default)]
     pub group: String,
+    /// 本地端口转发（-L）规格列表。
+    #[serde(default)]
+    pub tunnels: Vec<TunnelSpec>,
+    /// 单跳跳板机：经由另一个已保存会话（其 id）建立到本会话的连接。None = 直连。
+    #[serde(default)]
+    pub jump_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -239,6 +245,8 @@ impl Session {
             proxy: String::new(),
             last_used: None,
             group: String::new(),
+            tunnels: Vec::new(),
+            jump_session_id: None,
         }
     }
 }
@@ -327,6 +335,17 @@ pub struct Group {
     pub name: String,
     #[serde(default)]
     pub color: String,
+}
+
+/// 一条本地端口转发（-L）规格：本机 `bind_addr:bind_port` 上的连接经 SSH 隧道
+/// 转发到 `dest_host:dest_port`（由远端服务器解析）。`bind_addr` 空 = 仅听 127.0.0.1。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunnelSpec {
+    #[serde(default)]
+    pub bind_addr: String,
+    pub bind_port: u16,
+    pub dest_host: String,
+    pub dest_port: u16,
 }
 
 /// 内置预设分组（首次运行 seed）：默认(无色)/本地(蓝)/测试(橙)/生产(绿)。
@@ -959,5 +978,49 @@ mod tests {
         assert!(!json.contains("super-secret"));
         assert!(!json.contains("prod.pem"));
         assert!(!json.contains("/Users/me/.ssh"));
+    }
+
+    #[test]
+    fn session_round_trips_tunnels_and_jump() {
+        let path = test_path("tunnels-jump");
+        let mut store = ConfigStore::load_at(path.clone()).unwrap();
+
+        let mut s = Session::new_empty();
+        s.id = "tgt".into();
+        s.host = "10.0.0.9".into();
+        s.tunnels = vec![
+            TunnelSpec {
+                bind_addr: String::new(),
+                bind_port: 8080,
+                dest_host: "localhost".into(),
+                dest_port: 80,
+            },
+            TunnelSpec {
+                bind_addr: "127.0.0.1".into(),
+                bind_port: 5432,
+                dest_host: "db.internal".into(),
+                dest_port: 5432,
+            },
+        ];
+        s.jump_session_id = Some("bastion".into());
+        store.upsert(s);
+        store.save().unwrap();
+
+        let loaded = ConfigStore::load_at(path).unwrap();
+        let s = loaded.get("tgt").unwrap();
+        assert_eq!(s.tunnels.len(), 2);
+        assert_eq!(s.tunnels[0].bind_port, 8080);
+        assert_eq!(s.tunnels[1].dest_host, "db.internal");
+        assert_eq!(s.jump_session_id.as_deref(), Some("bastion"));
+    }
+
+    #[test]
+    fn legacy_session_without_tunnel_fields_defaults_empty() {
+        let path = test_path("legacy-no-tunnels");
+        fs::write(&path, r#"{ "sessions": [ { "id": "x", "name": "X", "host": "h", "port": 22, "user": "root", "auth": "password" } ] }"#).unwrap();
+        let loaded = ConfigStore::load_at(path).unwrap();
+        let s = loaded.get("x").unwrap();
+        assert!(s.tunnels.is_empty());
+        assert_eq!(s.jump_session_id, None);
     }
 }

@@ -951,6 +951,8 @@ fn wire_callbacks(
                     proxy: String::new(),
                     last_used: None,
                     group: String::new(),
+                    tunnels: Vec::new(),
+                    jump_session_id: None,
                 });
                 added += 1;
             }
@@ -1069,6 +1071,8 @@ fn wire_callbacks(
             proxy: String::new(),
             last_used: None,
             group: draft.group.to_string(),
+            tunnels: Vec::new(),
+            jump_session_id: None,
         };
         // 「记住」开关决定是否持久化：不记住→清空；记住+新输入明文→加密成
         // enc:v1: 密文（加密不可用则不持久化，绝不明文落盘）；记住+未改密码
@@ -1152,6 +1156,8 @@ fn wire_callbacks(
             proxy: String::new(),
             last_used: None,
             group: draft.group.to_string(),
+            tunnels: Vec::new(),
+            jump_session_id: None,
         };
         // 与正式连接保持一致：编辑时密码留空沿用已存密码、proxy 沿用已存配置；
         // json 密码为空再回查 keyring。
