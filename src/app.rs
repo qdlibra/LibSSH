@@ -2784,6 +2784,7 @@ fn start_session_io(
         ctx.runtime.handle(),
         tab_id.clone(),
         session,
+        None,
         initial_cols,
         initial_rows,
     );

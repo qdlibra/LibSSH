@@ -414,6 +414,7 @@ pub fn spawn_session(
     runtime: &tokio::runtime::Handle,
     tab_id: String,
     session: Session,
+    jump: Option<Session>,
     initial_cols: u32,
     initial_rows: u32,
 ) -> (SessionHandle, UnboundedReceiver<SessionEvent>) {
@@ -424,6 +425,7 @@ pub fn spawn_session(
     let join = runtime.spawn(async move {
         if let Err(err) = run_session(
             session,
+            jump,
             cmd_rx,
             evt_tx_for_task.clone(),
             initial_cols,
@@ -445,8 +447,44 @@ pub fn spawn_session(
     )
 }
 
+/// 建立到目标的**未认证**传输 Handle。第二项为需在整个会话期间保活的跳板 Handle
+/// （直连/代理时为 None；跳板逻辑在后续任务接入）。
+async fn connect_transport(
+    session: &Session,
+    _jump: &Option<Session>,
+    config: Arc<client::Config>,
+    events: &UnboundedSender<SessionEvent>,
+) -> Result<(Handle<ClientHandler>, Option<Handle<ClientHandler>>)> {
+    let handler = ClientHandler {
+        host: session.host.clone(),
+        port: session.port,
+    };
+    let addr = format!("{}:{}", session.host, session.port);
+    let handle = match crate::proxy::resolve(&session.proxy) {
+        Some(proxy) => {
+            let _ = events.send(SessionEvent::Status(format!(
+                "{} {} -> {}",
+                t("经代理连接", "via proxy"),
+                crate::proxy::describe(&proxy),
+                addr
+            )));
+            let stream = crate::proxy::connect(&proxy, &session.host, session.port)
+                .await
+                .with_context(|| format!("proxy connect to {} failed", addr))?;
+            client::connect_stream(config, stream, handler)
+                .await
+                .with_context(|| format!("connect {} failed", addr))?
+        }
+        None => client::connect(config, addr.as_str(), handler)
+            .await
+            .with_context(|| format!("connect {} failed", addr))?,
+    };
+    Ok((handle, None))
+}
+
 async fn run_session(
     session: Session,
+    jump: Option<Session>,
     mut commands: UnboundedReceiver<SessionCommand>,
     events: UnboundedSender<SessionEvent>,
     initial_cols: u32,
@@ -473,30 +511,7 @@ async fn run_session(
         keepalive_max: 3,
         ..<_>::default()
     });
-    let handler = ClientHandler {
-        host: session.host.clone(),
-        port: session.port,
-    };
-    let addr = format!("{}:{}", session.host, session.port);
-    let mut handle = match crate::proxy::resolve(&session.proxy) {
-        Some(proxy) => {
-            let _ = events.send(SessionEvent::Status(format!(
-                "{} {} -> {}",
-                t("经代理连接", "via proxy"),
-                crate::proxy::describe(&proxy),
-                addr
-            )));
-            let stream = crate::proxy::connect(&proxy, &session.host, session.port)
-                .await
-                .with_context(|| format!("proxy connect to {} failed", addr))?;
-            client::connect_stream(config, stream, handler)
-                .await
-                .with_context(|| format!("connect {} failed", addr))?
-        }
-        None => client::connect(config, addr.as_str(), handler)
-            .await
-            .with_context(|| format!("connect {} failed", addr))?,
-    };
+    let (mut handle, _jump_keepalive) = connect_transport(&session, &jump, config, &events).await?;
 
     let authed = match session.auth {
         AuthMethod::Password => handle
