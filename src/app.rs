@@ -2957,6 +2957,10 @@ fn apply_session_event_to_window(
         SessionEvent::Status(status) => {
             update_terminal(&|t| t.status = status.clone().into());
         }
+        SessionEvent::TunnelStatus { msg, .. } => {
+            // 端口转发监听状态：复用终端状态行提示（UI 细化留后续任务）。
+            update_terminal(&|t| t.status = msg.clone().into());
+        }
         SessionEvent::Output(chunk) => {
             let built = {
                 let mut map = bufs.lock().unwrap();

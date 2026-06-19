@@ -193,6 +193,12 @@ pub enum SessionEvent {
         state: u8,
         msg: String,
     },
+    /// 端口转发监听状态：listening=true 表示已开始监听，false 表示绑定失败。
+    TunnelStatus {
+        spec: String,
+        listening: bool,
+        msg: String,
+    },
 }
 
 pub struct SessionHandle {
@@ -563,6 +569,64 @@ async fn run_session(
         session.host
     )));
 
+    // 本地端口转发（-L）：每条隧道起一个 acceptor 子任务（只 bind+accept+回传，
+    // 不碰 handle），接受到的连接经 mpsc 回到本任务串行开 direct-tcpip 通道。
+    let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel::<ForwardReq>();
+    let mut tunnel_acceptors: Vec<JoinHandle<()>> = Vec::new();
+    let mut pump_tasks: Vec<JoinHandle<()>> = Vec::new();
+    for spec in &session.tunnels {
+        let bind_addr = if spec.bind_addr.is_empty() {
+            "127.0.0.1"
+        } else {
+            spec.bind_addr.as_str()
+        };
+        let listen = format!("{}:{}", bind_addr, spec.bind_port);
+        match tokio::net::TcpListener::bind(&listen).await {
+            Ok(listener) => {
+                let _ = events.send(SessionEvent::TunnelStatus {
+                    spec: spec.to_line(),
+                    listening: true,
+                    msg: format!("{} {}", t("本地转发监听", "forwarding on"), listen),
+                });
+                let tx = fwd_tx.clone();
+                let dest_host = spec.dest_host.clone();
+                let dest_port = spec.dest_port;
+                tunnel_acceptors.push(tokio::spawn(async move {
+                    loop {
+                        match listener.accept().await {
+                            Ok((stream, peer)) => {
+                                if tx
+                                    .send(ForwardReq {
+                                        stream,
+                                        peer,
+                                        dest_host: dest_host.clone(),
+                                        dest_port,
+                                    })
+                                    .is_err()
+                                {
+                                    break; // run_session 已退出
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("tunnel accept error on {listen}: {e}");
+                                break;
+                            }
+                        }
+                    }
+                }));
+            }
+            Err(e) => {
+                let _ = events.send(SessionEvent::TunnelStatus {
+                    spec: spec.to_line(),
+                    listening: false,
+                    msg: format!("{}: {e}", t("本地转发监听失败", "forward bind failed")),
+                });
+            }
+        }
+    }
+    // 仅留各 acceptor 持有的 sender 克隆；它们全部退出后 fwd_rx 自然结束。
+    drop(fwd_tx);
+
     let mut prompt_injected = false;
     let mut echo_suppressor = EchoSuppressor::new();
 
@@ -678,7 +742,39 @@ async fn run_session(
                     _ => {}
                 }
             }
+            maybe_fwd = fwd_rx.recv() => {
+                if let Some(req) = maybe_fwd {
+                    // handle 为 &self 调用，串行开通道；await 期间由 russh 会话任务驱动应答，不阻塞本循环。
+                    match handle
+                        .channel_open_direct_tcpip(
+                            req.dest_host.clone(),
+                            req.dest_port as u32,
+                            req.peer.ip().to_string(),
+                            req.peer.port() as u32,
+                        )
+                        .await
+                    {
+                        Ok(channel) => {
+                            pump_tasks.push(tokio::spawn(pump_forward(req.stream, channel)));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "direct-tcpip to {}:{} failed: {e}",
+                                req.dest_host,
+                                req.dest_port
+                            );
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    for h in tunnel_acceptors {
+        h.abort();
+    }
+    for h in pump_tasks {
+        h.abort();
     }
 
     let _ = handle
@@ -688,6 +784,22 @@ async fn run_session(
         t("连接已关闭", "connection closed").into(),
     ));
     Ok(())
+}
+
+/// 一条「本地监听口接到的连接」请求，由 acceptor 子任务发回 run_session 主任务，
+/// 后者用独占的 handle 串行开 direct-tcpip 通道。
+struct ForwardReq {
+    stream: tokio::net::TcpStream,
+    peer: std::net::SocketAddr,
+    dest_host: String,
+    dest_port: u16,
+}
+
+/// 在本地 TCP 连接与 SSH direct-tcpip 通道之间双向搬运字节，直到任一端关闭。
+/// `ChannelStream` 自动 `Unpin + Send`，可安全移入独立任务并参与 copy_bidirectional。
+async fn pump_forward(mut tcp: tokio::net::TcpStream, channel: russh::Channel<client::Msg>) {
+    let mut chan = channel.into_stream();
+    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut chan).await;
 }
 
 fn parse_monitor_block(
