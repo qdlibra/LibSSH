@@ -348,6 +348,8 @@ pub struct TunnelSpec {
     pub dest_port: u16,
 }
 
+// parse_line/to_line 在 Task 8（UI 隧道编辑）接线前是死代码；接线后移除本豁免。
+#[allow(dead_code)]
 impl TunnelSpec {
     /// 解析一行 `[bind_addr:]bind_port:dest_host:dest_port`。
     pub fn parse_line(line: &str) -> std::result::Result<TunnelSpec, String> {
@@ -393,6 +395,8 @@ impl TunnelSpec {
 }
 
 /// 把多行文本解析为隧道列表：跳过空行与非法行（一期宽松，UI 内联校验留后续）。
+// Task 8（UI submit）接线前是死代码；接线后移除本豁免。
+#[allow(dead_code)]
 pub fn parse_tunnel_lines(text: &str) -> Vec<TunnelSpec> {
     text.lines()
         .map(str::trim)
@@ -558,6 +562,8 @@ impl ConfigStore {
 
     /// 解析跳板会话：按 `jump_session_id` 查另一个已保存会话并克隆返回（不解密密码）。
     /// 自跳 / 空 id / 不存在 → None。调用方负责对返回值做 `resolve_session_password`。
+    // Task 7（app 连接路径）接线前是死代码；接线后移除本豁免。
+    #[allow(dead_code)]
     pub fn resolve_jump(&self, session: &Session) -> Option<Session> {
         let id = session.jump_session_id.as_deref()?;
         if id.is_empty() || id == session.id {
