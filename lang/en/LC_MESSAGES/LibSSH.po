@@ -335,3 +335,18 @@ msgstr "e.g. production (optional)"
 
 msgid "timeout"
 msgstr "timeout"
+
+msgid "Manage groups"
+msgstr "Manage groups"
+
+msgid "New group"
+msgstr "New group"
+
+msgid "Default group"
+msgstr "Default group"
+
+msgid "Servers are grouped in this order on the quick-connect page."
+msgstr "Servers are grouped in this order on the quick-connect page."
+
+msgid "New connection"
+msgstr "New connection"

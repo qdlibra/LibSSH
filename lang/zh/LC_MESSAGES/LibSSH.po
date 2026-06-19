@@ -335,3 +335,18 @@ msgstr "如 生产环境（可选）"
 
 msgid "timeout"
 msgstr "超时"
+
+msgid "Manage groups"
+msgstr "分组管理"
+
+msgid "New group"
+msgstr "新建分组"
+
+msgid "Default group"
+msgstr "默认"
+
+msgid "Servers are grouped in this order on the quick-connect page."
+msgstr "快速连接页将按此顺序分组展示服务器。"
+
+msgid "New connection"
+msgstr "新建连接"

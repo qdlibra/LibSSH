@@ -1,0 +1,282 @@
+import { Theme } from "theme.slint";
+import { GhostButton } from "widgets.slint";
+
+// One connection group, as projected to the UI. `name == ""` is the built-in
+// default group (rendered with `label`, not deletable / renamable).
+export struct GroupInfo {
+    name: string,       // raw stored name ("" = default)
+    label: string,      // display label (localized 默认 / Default when default)
+    color: brush,       // group colour (ignored when has-color is false)
+    has-color: bool,
+    is-default: bool,
+}
+
+// --- Small square icon button ----------------------------------------------
+component MiniBtn inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: enabled && ta.has-hover ? (danger ? Theme.danger-soft : Theme.row-hover) : transparent;
+    Text {
+        text: glyph;
+        font-family: "Material Icons";
+        font-size: 16px;
+        color: !enabled ? Theme.text-faint.with-alpha(0.4)
+            : ta.has-hover ? (danger ? Theme.danger : Theme.text) : Theme.text-dim;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+}
+
+// --- GroupDialog -----------------------------------------------------------
+export component GroupDialog inherits Rectangle {
+    in property <[GroupInfo]> groups;
+    in-out property <bool> is-open: false;
+    callback add();
+    callback del(int);
+    callback rename(int, string);
+    callback recolor(int, color);
+    callback reorder(int, int);
+    callback close();
+
+    // 12 swatches + a leading "no colour" (transparent) cell.
+    property <[color]> palette: [
+        #00000000, #2563eb, #0891b2, #16a34a, #65a30d, #ca8a04,
+        #c2740a, #dc2626, #db2777, #7c3aed, #4f46e5, #475569, #0d9488,
+    ];
+
+    visible: is-open;
+    background: #000000aa;
+
+    TouchArea { clicked => { root.close(); } }
+
+    Rectangle {
+        width: 460px;
+        height: 540px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.card;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.shadow-color;
+
+        TouchArea {}   // swallow clicks inside the card
+
+        VerticalLayout {
+            padding: 20px;
+            spacing: 14px;
+
+            HorizontalLayout {
+                Text {
+                    text: @tr("Manage groups");
+                    color: Theme.text;
+                    font-size: Theme.fs-xl;
+                    font-weight: 600;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                MiniBtn {
+                    glyph: "\u{E5CD}";   // close
+                    clicked => { root.close(); }
+                }
+            }
+
+            Text {
+                text: @tr("Servers are grouped in this order on the quick-connect page.");
+                color: Theme.text-faint;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+
+            Flickable {
+                vertical-stretch: 1;
+                viewport-width: self.width;
+                viewport-height: max(self.height, col.preferred-height);
+                col := VerticalLayout {
+                    alignment: start;
+                    spacing: 6px;
+                    for g[i] in root.groups : Rectangle {
+                        height: 42px;
+                        border-radius: 8px;
+                        background: Theme.bg-main;
+                        border-width: 1px;
+                        border-color: Theme.border;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 6px;
+
+                            // reorder
+                            MiniBtn {
+                                glyph: "\u{E316}";   // keyboard_arrow_up
+                                y: (parent.height - self.height) / 2;
+                                enabled: i > 0;
+                                clicked => { root.reorder(i, -1); }
+                            }
+                            MiniBtn {
+                                glyph: "\u{E313}";   // keyboard_arrow_down
+                                y: (parent.height - self.height) / 2;
+                                enabled: i < root.groups.length - 1;
+                                clicked => { root.reorder(i, 1); }
+                            }
+
+                            // colour swatch → palette popup
+                            Rectangle {
+                                width: 22px;
+                                height: 22px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 6px;
+                                background: g.has-color ? g.color : transparent;
+                                border-width: g.has-color ? 0px : 1px;
+                                border-color: Theme.border-strong;
+                                Text {
+                                    text: g.has-color ? "" : "\u{E14C}";   // "clear" glyph for none
+                                    font-family: "Material Icons";
+                                    font-size: 12px;
+                                    color: Theme.text-faint;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                sw-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { pal.show(); }
+                                }
+                                pal := PopupWindow {
+                                    x: 0;
+                                    y: parent.height + 4px;
+                                    width: 188px;
+                                    height: 96px;
+                                    Rectangle {
+                                        background: Theme.card;
+                                        border-radius: 8px;
+                                        border-width: 1px;
+                                        border-color: Theme.border-strong;
+                                        drop-shadow-blur: 14px;
+                                        drop-shadow-color: Theme.shadow-color;
+                                        for c[ci] in root.palette : Rectangle {
+                                            x: 8px + mod(ci, 6) * 29px;
+                                            y: 8px + floor(ci / 6) * 29px;
+                                            width: 24px;
+                                            height: 24px;
+                                            border-radius: 6px;
+                                            background: ci == 0 ? transparent : c;
+                                            border-width: ci == 0 ? 1px : (sc-ta.has-hover ? 2px : 0px);
+                                            border-color: ci == 0 ? Theme.border-strong : Theme.text;
+                                            Text {
+                                                text: ci == 0 ? "\u{E14C}" : "";   // clear
+                                                font-family: "Material Icons";
+                                                font-size: 13px;
+                                                color: Theme.text-faint;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                            sc-ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => {
+                                                    root.recolor(i, c);
+                                                    pal.close();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // name — editable unless default
+                            if g.is-default : Text {
+                                text: g.label;
+                                color: Theme.text;
+                                font-size: Theme.fs-md;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            if !g.is-default : Rectangle {
+                                horizontal-stretch: 1;
+                                height: 30px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: nm.has-focus ? Theme.accent : Theme.border;
+                                background: Theme.card;
+                                nm := TextInput {
+                                    x: 9px;
+                                    width: parent.width - 18px;
+                                    height: parent.height;
+                                    text: g.name;
+                                    color: Theme.text;
+                                    font-size: Theme.fs-md;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    accepted => { root.rename(i, self.text); }
+                                    changed has-focus => {
+                                        if (!self.has-focus) { root.rename(i, self.text); }
+                                    }
+                                }
+                            }
+
+                            // delete — hidden for default
+                            if !g.is-default : MiniBtn {
+                                glyph: "\u{E872}";   // delete
+                                y: (parent.height - self.height) / 2;
+                                danger: true;
+                                clicked => { root.del(i); }
+                            }
+                            if g.is-default : Rectangle { width: 26px; }
+                        }
+                    }
+                }
+            }
+
+            // add
+            Rectangle {
+                height: 34px;
+                border-radius: 7px;
+                border-width: 1px;
+                border-color: add-ta.has-hover ? Theme.accent : Theme.border;
+                background: add-ta.has-hover ? Theme.accent-soft : transparent;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    Text {
+                        text: "\u{E145}";   // add
+                        font-family: "Material Icons";
+                        font-size: 16px;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: @tr("New group");
+                        color: Theme.accent;
+                        font-size: Theme.fs-sm;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+                add-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.add(); }
+                }
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                GhostButton {
+                    text: @tr("Done");
+                    clicked => { root.close(); }
+                }
+            }
+        }
+    }
+}

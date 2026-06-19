@@ -1,5 +1,6 @@
 import { Theme } from "theme.slint";
 import { LabeledInput, PrimaryButton, GhostButton } from "widgets.slint";
+import { GroupInfo } from "group_dialog.slint";
 
 export struct SessionDraft {
     id: string,
@@ -27,6 +28,7 @@ export component SessionDialog inherits Rectangle {
     in-out property <string> draft-user: "root";
     in-out property <string> draft-auth: "password";
     in-out property <string> draft-group;
+    in property <[GroupInfo]> groups;
     in-out property <string> draft-password;
     in-out property <bool> draft-remember: true;
     in-out property <string> draft-key-path;
@@ -107,10 +109,102 @@ export component SessionDialog inherits Rectangle {
                 value <=> root.draft-user;
             }
 
-            LabeledInput {
-                label: @tr("Group");
-                placeholder: @tr("e.g. production (optional)");
-                value <=> root.draft-group;
+            // Group — dropdown over the managed groups.
+            VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: @tr("Group");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                }
+                Rectangle {
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: dd-ta.has-hover ? Theme.border-strong : Theme.border-subtle;
+                    background: Theme.bg-root;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        Text {
+                            text: root.draft-group == "" ? @tr("Default group") : root.draft-group;
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-md;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: "\u{E5CF}";   // expand_more
+                            font-family: "Material Icons";
+                            color: Theme.text-muted;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    dd-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { grp-pop.show(); }
+                    }
+                    grp-pop := PopupWindow {
+                        x: 0;
+                        y: parent.height + 2px;
+                        width: parent.width;
+                        height: min(root.groups.length, 8) * 29px + 8px;
+                        Rectangle {
+                            background: Theme.bg-panel;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: Theme.border-strong;
+                            drop-shadow-blur: 14px;
+                            drop-shadow-color: Theme.shadow-color;
+                            VerticalLayout {
+                                padding: 4px;
+                                spacing: 1px;
+                                for g in root.groups : Rectangle {
+                                    height: 28px;
+                                    border-radius: 4px;
+                                    background: gi-ta.has-hover ? Theme.bg-hover : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 8px;
+                                        Rectangle {
+                                            width: 8px;
+                                            height: 8px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 4px;
+                                            background: g.has-color ? g.color : Theme.text-faint;
+                                        }
+                                        Text {
+                                            text: g.label;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.fs-md;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                            overflow: elide;
+                                        }
+                                        if g.name == root.draft-group : Text {
+                                            text: "\u{E5CA}";   // check
+                                            font-family: "Material Icons";
+                                            color: Theme.accent;
+                                            font-size: 16px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    gi-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.draft-group = g.name;
+                                            grp-pop.close();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Auth method toggle

@@ -270,6 +270,7 @@ component SegThemeButton inherits Rectangle {
 
 // --- Sidebar ---------------------------------------------------------------
 export component Sidebar inherits Rectangle {
+    in property <string> app-version;                // 由 app.slint 透传 CARGO_PKG_VERSION，勿写死
     in property <string> connection-state: @tr("Not connected");
     in property <int> conn-state;                    // 0 gray / 1 green / 2 yellow
     in property <string> resource-title: @tr("Local resources");
@@ -480,7 +481,7 @@ export component Sidebar inherits Rectangle {
                 padding-top: 12px;
                 padding-bottom: 16px;
                 Text {
-                    text: "v0.2.3";
+                    text: "v" + root.app-version;
                     font-family: Theme.font-mono;
                     font-size: 11px;
                     color: Theme.text-faint;

@@ -11,8 +11,10 @@ export struct SessionInfo {
     last-used: string, // ISO timestamp or "never"
     latency: int,      // round-trip ms; -1 = probing, -2 = unreachable/timeout
     group-label: string, // group header label ("" = no header / ungrouped-only)
-    group-index: int,    // group order index → drives the group accent colour
+    group-index: int,    // group order index (used for grouping boundaries)
     group-size: int,     // number of (filtered) sessions in this group
+    group-color: brush,  // the group's colour (ignored when group-has-color is false)
+    group-has-color: bool,
 }
 
 // --- ConnectButton (accent text button) ------------------------------------
@@ -64,11 +66,9 @@ component RowIconButton inherits Rectangle {
 component GroupHeader inherits Rectangle {
     in property <string> label;
     in property <int> count;
-    in property <int> group-index;
-    property <brush> gcolor: group-index == 0 ? Theme.accent
-        : group-index == 1 ? Theme.warn
-        : group-index == 2 ? Theme.ok
-        : group-index == 3 ? Theme.danger : Theme.accent;
+    in property <brush> accent;
+    in property <bool> has-color;
+    property <brush> gcolor: has-color ? accent : Theme.text-faint;
     height: 34px;
     HorizontalLayout {
         padding-left: 18px;
@@ -123,10 +123,7 @@ component SessionRow inherits Rectangle {
     callback edit();
     callback request-delete();
 
-    property <brush> gcolor: session.group-index == 0 ? Theme.accent
-        : session.group-index == 1 ? Theme.warn
-        : session.group-index == 2 ? Theme.ok
-        : session.group-index == 3 ? Theme.danger : Theme.accent;
+    property <brush> gcolor: session.group-has-color ? session.group-color : Theme.text-faint;
     property <string> lat-text: session.latency == -1 ? "···"
         : session.latency == -2 ? @tr("timeout")
         : "\{session.latency}ms";
@@ -134,10 +131,6 @@ component SessionRow inherits Rectangle {
         : session.latency == -2 ? Theme.danger
         : session.latency < 100 ? Theme.ok
         : session.latency < 250 ? Theme.warn : Theme.danger;
-    property <brush> lat-bg: session.latency == -1 ? transparent
-        : session.latency == -2 ? Theme.danger-soft
-        : session.latency < 100 ? Theme.ok-soft
-        : session.latency < 250 ? Theme.warn-soft : Theme.danger-soft;
 
     height: 48px;
     background: row-ta.has-hover ? Theme.row-hover : transparent;
@@ -205,27 +198,15 @@ component SessionRow inherits Rectangle {
             width: 52px;
             vertical-alignment: center;
         }
-        // latency pill
-        HorizontalLayout {
+        // latency — colour-graded text, no background
+        Text {
+            text: lat-text;
+            font-family: Theme.font-mono;
+            font-size: 11px;
+            font-weight: 500;
+            color: lat-color;
             width: 74px;
-            alignment: start;
-            Rectangle {
-                y: (parent.height - self.height) / 2;
-                border-radius: 6px;
-                background: lat-bg;
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px;
-                    padding-top: 3px; padding-bottom: 3px;
-                    Text {
-                        text: lat-text;
-                        font-family: Theme.font-mono;
-                        font-size: 11px;
-                        font-weight: 500;
-                        color: lat-color;
-                        vertical-alignment: center;
-                    }
-                }
-            }
+            vertical-alignment: center;
         }
         Text {
             text: session.user;
@@ -273,38 +254,32 @@ component ListHeader inherits Rectangle {
             horizontal-stretch: 1;
             preferred-width: 0;
             min-width: 120px;
-            font-family: Theme.font-mono;
-            font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+            font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
             color: Theme.text-faint; vertical-alignment: center;
         }
         Text {
             text: @tr("Address"); width: 150px;
-            font-family: Theme.font-mono;
-            font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+            font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
             color: Theme.text-faint; vertical-alignment: center;
         }
         Text {
             text: @tr("Port"); width: 52px;
-            font-family: Theme.font-mono;
-            font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+            font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
             color: Theme.text-faint; vertical-alignment: center;
         }
         Text {
             text: @tr("Latency"); width: 74px;
-            font-family: Theme.font-mono;
-            font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+            font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
             color: Theme.text-faint; vertical-alignment: center;
         }
         Text {
             text: @tr("User"); width: 96px;
-            font-family: Theme.font-mono;
-            font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+            font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
             color: Theme.text-faint; vertical-alignment: center;
         }
         Text {
             text: @tr("Actions"); width: 160px;
-            font-family: Theme.font-mono;
-            font-size: 10px; font-weight: 500; letter-spacing: 0.5px;
+            font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
             color: Theme.text-faint;
             horizontal-alignment: right; vertical-alignment: center;
         }
@@ -319,6 +294,7 @@ export component Welcome inherits Rectangle {
     in property <string> import-hint;        // result text after an import (unused in this layout)
     callback new-session();
     callback search-changed(string);
+    callback manage-groups();
     callback import-ssh-config();
     callback connect-session(string);
     callback edit-session(string);
@@ -420,7 +396,7 @@ export component Welcome inherits Rectangle {
                             vertical-alignment: center;
                         }
                         Text {
-                            text: @tr("New session");
+                            text: @tr("New connection");
                             color: white;
                             font-size: 12.5px;
                             font-weight: 600;
@@ -428,6 +404,38 @@ export component Welcome inherits Rectangle {
                         }
                     }
                     new-ta := TouchArea { mouse-cursor: pointer; clicked => { root.new-session(); } }
+                }
+                // manage groups — right of New connection
+                Rectangle {
+                    height: 34px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: mg-ta.has-hover ? Theme.border-strong : Theme.border;
+                    background: mg-ta.has-hover ? Theme.row-hover : transparent;
+                    HorizontalLayout {
+                        padding-left: 13px;
+                        padding-right: 13px;
+                        spacing: 7px;
+                        Text {
+                            text: "\u{E574}";   // Material "category" (groups)
+                            font-family: "Material Icons";
+                            color: Theme.text-dim;
+                            font-size: 16px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: @tr("Manage groups");
+                            color: Theme.text;
+                            font-size: 12.5px;
+                            font-weight: 500;
+                            vertical-alignment: center;
+                        }
+                    }
+                    mg-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.manage-groups(); }
+                    }
                 }
             }
         }
@@ -474,10 +482,11 @@ export component Welcome inherits Rectangle {
                         ListHeader {}
                         Rectangle { height: 1px; background: Theme.border; }
                         for session[i] in root.sessions : VerticalLayout {
-                            if session.group-label != "" && (i == 0 || root.sessions[i - 1].group-label != session.group-label) : GroupHeader {
+                            if session.group-label != "" && (i == 0 || root.sessions[i - 1].group-index != session.group-index) : GroupHeader {
                                 label: session.group-label;
                                 count: session.group-size;
-                                group-index: session.group-index;
+                                accent: session.group-color;
+                                has-color: session.group-has-color;
                             }
                             SessionRow {
                                 session: session;

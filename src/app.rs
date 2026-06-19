@@ -208,6 +208,7 @@ fn initialise_models(window: &AppWindow, store: &ConfigStore) -> AppModels {
     let sessions_model: Rc<VecModel<SessionInfo>> = Rc::new(VecModel::default());
     sync_sessions_to_model(window, store, &sessions_model, "");
     window.set_sessions(ModelRc::from(sessions_model.clone()));
+    sync_groups_to_model(store, window);
 
     let tabs_model: Rc<VecModel<TabInfo>> = Rc::new(VecModel::default());
     tabs_model.push(TabInfo {
@@ -531,11 +532,30 @@ fn notes_blocks_model(md: &str) -> ModelRc<NoteBlock> {
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
+/// Parse a `#rrggbb` colour into bytes; returns None for "" / malformed input.
+fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
+fn group_brush(color: &str) -> (slint::Brush, bool) {
+    match parse_hex(color) {
+        Some((r, g, b)) => (slint::Color::from_rgb_u8(r, g, b).into(), true),
+        None => (slint::Color::from_argb_u8(0, 0, 0, 0).into(), false),
+    }
+}
+
 /// Rebuild the quick-connect model: filter by `filter` (name/host/user), order
-/// by group (first-appearance), annotate each row with its group header label,
-/// colour index and size, and refresh the header subtitle. Reordering is safe
-/// for latency probing because `set_session_latency` writes back by id; already
-/// measured latencies are carried forward by id so search doesn't blank them.
+/// rows by the group registry, and annotate each row with its group header
+/// label, order index, size and colour. Reordering is safe for latency probing
+/// because `set_session_latency` writes back by id; already-measured latencies
+/// are carried forward by id so search / regroup don't blank them.
 fn sync_sessions_to_model(
     win: &AppWindow,
     store: &ConfigStore,
@@ -543,9 +563,10 @@ fn sync_sessions_to_model(
     filter: &str,
 ) {
     let sessions = store.sessions();
+    let groups = store.groups();
 
     // Preserve already-measured latencies (keyed by id) across rebuilds.
-    let mut prev_lat: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+    let mut prev_lat: HashMap<String, i32> = HashMap::new();
     for i in 0..model.row_count() {
         if let Some(row) = model.row_data(i) {
             prev_lat.insert(row.id.to_string(), row.latency);
@@ -560,35 +581,37 @@ fn sync_sessions_to_model(
             || s.user.to_lowercase().contains(&filter_lc)
     };
 
-    // Group order = first appearance over the full set.
-    let mut group_order: Vec<String> = Vec::new();
-    for s in sessions.iter() {
-        if !group_order.iter().any(|g| g == &s.group) {
-            group_order.push(s.group.clone());
+    // Resolve a session to a registry group name; unknown / empty → default ("").
+    let known: HashSet<&str> = groups.iter().map(|g| g.name.as_str()).collect();
+    fn resolve<'a>(s: &'a Session, known: &HashSet<&str>) -> &'a str {
+        if s.group.is_empty() || !known.contains(s.group.as_str()) {
+            ""
+        } else {
+            s.group.as_str()
         }
     }
-    let has_named = sessions.iter().any(|s| !s.group.is_empty());
+    let has_named = sessions.iter().any(|s| !resolve(s, &known).is_empty());
 
     let mut rows: Vec<SessionInfo> = Vec::new();
-    for (gi, g) in group_order.iter().enumerate() {
+    for (gi, g) in groups.iter().enumerate() {
         let members: Vec<&Session> = sessions
             .iter()
-            .filter(|s| &s.group == g && matches(s))
+            .filter(|s| resolve(s, &known) == g.name.as_str() && matches(s))
             .collect();
         if members.is_empty() {
             continue;
         }
-        // Empty group → "Ungrouped" header, unless every session is ungrouped
-        // (then show a flat list with no header at all).
-        let label = if g.is_empty() {
+        // Default group shows no header when every session is ungrouped (flat).
+        let label = if g.name.is_empty() {
             if has_named {
-                crate::i18n::t("未分组", "Ungrouped").to_string()
+                crate::i18n::t("默认", "Default").to_string()
             } else {
                 String::new()
             }
         } else {
-            g.clone()
+            g.name.clone()
         };
+        let (group_color, group_has_color) = group_brush(&g.color);
         let size = members.len() as i32;
         for s in members {
             rows.push(SessionInfo {
@@ -607,6 +630,8 @@ fn sync_sessions_to_model(
                 group_label: label.clone().into(),
                 group_index: gi as i32,
                 group_size: size,
+                group_color: group_color.clone(),
+                group_has_color,
             });
         }
     }
@@ -614,6 +639,14 @@ fn sync_sessions_to_model(
 
     // Header subtitle — counts over the FULL set, independent of the filter.
     let total = sessions.len();
+    let group_count = groups
+        .iter()
+        .filter(|g| {
+            sessions
+                .iter()
+                .any(|s| resolve(s, &known) == g.name.as_str())
+        })
+        .count();
     let click_hint = crate::i18n::t(
         "点击「连接」建立 SSH 会话",
         "click Connect to start an SSH session",
@@ -623,7 +656,7 @@ fn sync_sessions_to_model(
             "{} {} · {} {} · {}",
             total,
             crate::i18n::t("个会话", "sessions"),
-            group_order.len(),
+            group_count,
             crate::i18n::t("个分组", "groups"),
             click_hint,
         )
@@ -636,6 +669,31 @@ fn sync_sessions_to_model(
         )
     };
     win.set_session_subtitle(subtitle.into());
+}
+
+/// Project the group registry to the UI model (used by the manage dialog and the
+/// session-dialog dropdown). The default "" group is labelled via i18n.
+fn sync_groups_to_model(store: &ConfigStore, window: &AppWindow) {
+    let rows: Vec<GroupInfo> = store
+        .groups()
+        .iter()
+        .map(|g| {
+            let is_default = g.name.is_empty();
+            let (color, has_color) = group_brush(&g.color);
+            GroupInfo {
+                name: g.name.clone().into(),
+                label: if is_default {
+                    crate::i18n::t("默认", "Default").into()
+                } else {
+                    g.name.clone().into()
+                },
+                color,
+                has_color,
+                is_default,
+            }
+        })
+        .collect();
+    window.set_groups(ModelRc::from(Rc::new(VecModel::from(rows))));
 }
 
 /// Measure TCP connect time to `host:port`, in milliseconds.
@@ -1337,6 +1395,116 @@ fn wire_callbacks(
         }
         if let Some(w) = weak.upgrade() {
             sync_quick_commands_to_model(&qcd_store.borrow(), &w);
+        }
+    });
+
+    // --- Connection group management ---------------------------------------
+    // After any change: persist, then rebuild both the group model (dialog /
+    // dropdown) and the session model (the quick-connect list reflects new
+    // colours / order / cascade).
+    let refresh_groups = |w: &AppWindow,
+                          store: &std::cell::RefCell<ConfigStore>,
+                          sessions: &VecModel<SessionInfo>,
+                          filter: &std::cell::RefCell<String>| {
+        let s = store.borrow();
+        sync_groups_to_model(&s, w);
+        sync_sessions_to_model(w, &s, sessions, &filter.borrow());
+    };
+
+    let ga_store = store.clone();
+    let ga_sessions = sessions_model.clone();
+    let ga_filter = search_filter.clone();
+    let weak = window.as_weak();
+    window.on_group_add(move || {
+        {
+            let mut s = ga_store.borrow_mut();
+            let base = crate::i18n::t("新分组", "New group").to_string();
+            let mut name = base.clone();
+            let mut n = 2;
+            while s.groups().iter().any(|g| g.name == name) {
+                name = format!("{base} {n}");
+                n += 1;
+            }
+            s.add_group(&name, "");
+            if let Err(e) = s.save() {
+                tracing::warn!("save groups failed: {e:#}");
+            }
+        }
+        if let Some(w) = weak.upgrade() {
+            refresh_groups(&w, &ga_store, &ga_sessions, &ga_filter);
+        }
+    });
+
+    let gd_store = store.clone();
+    let gd_sessions = sessions_model.clone();
+    let gd_filter = search_filter.clone();
+    let weak = window.as_weak();
+    window.on_group_del(move |idx: i32| {
+        {
+            let mut s = gd_store.borrow_mut();
+            s.remove_group_at(idx as usize);
+            if let Err(e) = s.save() {
+                tracing::warn!("save groups failed: {e:#}");
+            }
+        }
+        if let Some(w) = weak.upgrade() {
+            refresh_groups(&w, &gd_store, &gd_sessions, &gd_filter);
+        }
+    });
+
+    let gr_store = store.clone();
+    let gr_sessions = sessions_model.clone();
+    let gr_filter = search_filter.clone();
+    let weak = window.as_weak();
+    window.on_group_rename(move |idx: i32, name: SharedString| {
+        {
+            let mut s = gr_store.borrow_mut();
+            s.rename_group_at(idx as usize, name.as_ref());
+            if let Err(e) = s.save() {
+                tracing::warn!("save groups failed: {e:#}");
+            }
+        }
+        if let Some(w) = weak.upgrade() {
+            refresh_groups(&w, &gr_store, &gr_sessions, &gr_filter);
+        }
+    });
+
+    let gc_store = store.clone();
+    let gc_sessions = sessions_model.clone();
+    let gc_filter = search_filter.clone();
+    let weak = window.as_weak();
+    window.on_group_recolor(move |idx: i32, col: slint::Color| {
+        let hex = if col.alpha() == 0 {
+            String::new()
+        } else {
+            format!("#{:02x}{:02x}{:02x}", col.red(), col.green(), col.blue())
+        };
+        {
+            let mut s = gc_store.borrow_mut();
+            s.set_group_color_at(idx as usize, &hex);
+            if let Err(e) = s.save() {
+                tracing::warn!("save groups failed: {e:#}");
+            }
+        }
+        if let Some(w) = weak.upgrade() {
+            refresh_groups(&w, &gc_store, &gc_sessions, &gc_filter);
+        }
+    });
+
+    let gm_store = store.clone();
+    let gm_sessions = sessions_model.clone();
+    let gm_filter = search_filter.clone();
+    let weak = window.as_weak();
+    window.on_group_reorder(move |idx: i32, dir: i32| {
+        {
+            let mut s = gm_store.borrow_mut();
+            s.move_group(idx as usize, dir);
+            if let Err(e) = s.save() {
+                tracing::warn!("save groups failed: {e:#}");
+            }
+        }
+        if let Some(w) = weak.upgrade() {
+            refresh_groups(&w, &gm_store, &gm_sessions, &gm_filter);
         }
     });
 

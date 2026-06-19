@@ -16,6 +16,7 @@ import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
 import { Welcome, SessionInfo } from "welcome.slint";
 import { SessionDialog, SessionDraft } from "session_dialog.slint";
+import { GroupDialog, GroupInfo } from "group_dialog.slint";
 import { TerminalView, TermSpan, TermMatch } from "terminal_view.slint";
 import { SftpEntry, SftpTreeNode } from "sftp_panel.slint";
 import { CommandBar, QuickCmdInfo } from "command_bar.slint";
@@ -170,6 +171,8 @@ export component AppWindow inherits Window {
     in property <[SessionInfo]> sessions;
     in-out property <string> search-text;        // quick-connect filter text
     in property <string> session-subtitle;       // "N 个会话 · M 个分组 · …", built in Rust
+    in property <[GroupInfo]> groups;             // managed connection groups (ordered)
+    in-out property <bool> group-dialog-open: false;
 
     // --- Tabs --------------------------------------------------------------
     in property <[TabInfo]> tabs;
@@ -194,6 +197,11 @@ export component AppWindow inherits Window {
     // --- Callbacks up to Rust ---------------------------------------------
     callback new-session-clicked();
     callback search-changed(string /* quick-connect filter */);
+    callback group-add();
+    callback group-del(int);
+    callback group-rename(int, string);
+    callback group-recolor(int, color);
+    callback group-reorder(int, int);
     callback import-ssh-config();             // import hosts from ~/.ssh/config
     in-out property <string> ssh-import-hint;  // result text shown after import
     callback connect-session(string /* session-id */);
@@ -278,6 +286,7 @@ export component AppWindow inherits Window {
 
         // Left sidebar
         Sidebar {
+            app-version: root.app-version;
             connection-state: root.connection-state;
             conn-state: root.conn-state;
             resource-title: root.resource-title;
@@ -328,6 +337,7 @@ export component AppWindow inherits Window {
                     import-hint: root.ssh-import-hint;
                     new-session => { root.new-session-clicked(); }
                     search-changed(t) => { root.search-changed(t); }
+                    manage-groups => { root.group-dialog-open = true; }
                     import-ssh-config => { root.import-ssh-config(); }
                     connect-session(id) => { root.connect-session(id); }
                     edit-session(id) => { root.edit-session(id); }
@@ -400,12 +410,12 @@ export component AppWindow inherits Window {
     // --- Top-right buttons: [下载] [设置] (设置 on the far right) ----------
     // Settings (gear) — far right.
     Rectangle {
-        x: root.width - 34px;
-        y: 8px;
-        width: 26px;
-        height: 26px;
-        border-radius: Theme.radius-sm;
-        background: gear-ta.has-hover || root.settings-open ? Theme.bg-hover : transparent;
+        x: root.width - 40px;
+        y: 6px;
+        width: 30px;
+        height: 30px;
+        border-radius: 7px;
+        background: gear-ta.has-hover || root.settings-open ? Theme.row-hover : transparent;
         gear-ta := TouchArea {
             mouse-cursor: pointer;
             clicked => {
@@ -416,20 +426,20 @@ export component AppWindow inherits Window {
         Text {
             text: "\u{E8B8}";              // Material Icons settings (gear)
             font-family: "Material Icons";
-            color: Theme.text-secondary;
-            font-size: Theme.fs-md;
+            color: gear-ta.has-hover || root.settings-open ? Theme.text : Theme.text-faint;
+            font-size: 16px;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
     }
     // Download manager — left of settings.
     Rectangle {
-        x: root.width - 64px;
-        y: 8px;
-        width: 26px;
-        height: 26px;
-        border-radius: Theme.radius-sm;
-        background: dl-ta.has-hover || root.download-open ? Theme.bg-hover : transparent;
+        x: root.width - 76px;
+        y: 6px;
+        width: 30px;
+        height: 30px;
+        border-radius: 7px;
+        background: dl-ta.has-hover || root.download-open ? Theme.row-hover : transparent;
         dl-ta := TouchArea {
             mouse-cursor: pointer;
             clicked => {
@@ -440,8 +450,8 @@ export component AppWindow inherits Window {
         Text {
             text: "\u{E2C4}";              // Material Icons file_download
             font-family: "Material Icons";
-            color: Theme.text-secondary;
-            font-size: Theme.fs-md;
+            color: dl-ta.has-hover || root.download-open ? Theme.text : Theme.text-faint;
+            font-size: 16px;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
@@ -1396,6 +1406,7 @@ export component AppWindow inherits Window {
         draft-user <=> root.dialog-user;
         draft-auth <=> root.dialog-auth;
         draft-group <=> root.dialog-group;
+        groups: root.groups;
         draft-password <=> root.dialog-password;
         draft-key-path <=> root.dialog-key-path;
         test-status <=> root.dialog-test-status;
@@ -1404,6 +1415,19 @@ export component AppWindow inherits Window {
         cancel => { root.session-dialog-cancel(); }
         pick-key-file => { root.session-dialog-pick-key(); }
         test-connection(draft) => { root.session-dialog-test(draft); }
+    }
+
+    GroupDialog {
+        width: parent.width;
+        height: parent.height;
+        groups: root.groups;
+        is-open <=> root.group-dialog-open;
+        add => { root.group-add(); }
+        del(i) => { root.group-del(i); }
+        rename(i, n) => { root.group-rename(i, n); }
+        recolor(i, c) => { root.group-recolor(i, c); }
+        reorder(i, d) => { root.group-reorder(i, d); }
+        close => { root.group-dialog-open = false; }
     }
 
     // --- In-app text editor overlay (满窗，仿 About 对话框) ----------------

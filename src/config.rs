@@ -320,6 +320,37 @@ pub struct QuickCommand {
     pub command: String,
 }
 
+/// 一个用户可管理的连接分组：名称 + 颜色（hex 如 "#2563eb"，"" = 无色）。
+/// `name == ""` 表示内置「默认」分组——未分组会话的兜底，不可删除/改名。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Group {
+    pub name: String,
+    #[serde(default)]
+    pub color: String,
+}
+
+/// 内置预设分组（首次运行 seed）：默认(无色)/本地(蓝)/测试(橙)/生产(绿)。
+fn preset_groups() -> Vec<Group> {
+    vec![
+        Group {
+            name: String::new(),
+            color: String::new(),
+        },
+        Group {
+            name: "本地".into(),
+            color: "#2563eb".into(),
+        },
+        Group {
+            name: "测试".into(),
+            color: "#c2740a".into(),
+        },
+        Group {
+            name: "生产".into(),
+            color: "#16a34a".into(),
+        },
+    ]
+}
+
 fn default_true() -> bool {
     true
 }
@@ -350,6 +381,9 @@ pub struct ConfigFile {
     /// 底部命令栏的快捷命令（全局共享）。
     #[serde(default)]
     pub quick_commands: Vec<QuickCommand>,
+    /// 连接分组注册表（有序，顺序即快速连接里的展示序）。
+    #[serde(default)]
+    pub groups: Vec<Group>,
 }
 
 impl Default for ConfigFile {
@@ -363,6 +397,7 @@ impl Default for ConfigFile {
             last_update_check: None,
             skipped_version: None,
             quick_commands: Vec::new(),
+            groups: Vec::new(),
         }
     }
 }
@@ -383,7 +418,7 @@ impl ConfigStore {
                 .with_context(|| format!("failed to create config dir {}", parent.display()))?;
         }
 
-        let cache = if path.exists() {
+        let mut cache = if path.exists() {
             let raw = fs::read_to_string(&path)
                 .with_context(|| format!("failed to read {}", path.display()))?;
             match serde_json::from_str::<ConfigFile>(&raw) {
@@ -401,6 +436,20 @@ impl ConfigStore {
         } else {
             ConfigFile::default()
         };
+
+        // Seed built-in groups on a fresh config; always keep a default "" group
+        // as the fallback bucket for ungrouped sessions.
+        if cache.groups.is_empty() {
+            cache.groups = preset_groups();
+        } else if !cache.groups.iter().any(|g| g.name.is_empty()) {
+            cache.groups.insert(
+                0,
+                Group {
+                    name: String::new(),
+                    color: String::new(),
+                },
+            );
+        }
 
         Ok(Self { path, cache })
     }
@@ -494,6 +543,81 @@ impl ConfigStore {
 
     pub fn remove_quick_command(&mut self, id: &str) {
         self.cache.quick_commands.retain(|x| x.id != id);
+    }
+
+    // --- Connection groups -------------------------------------------------
+    pub fn groups(&self) -> &[Group] {
+        &self.cache.groups
+    }
+
+    /// Append a new named group. Empty / duplicate names are ignored (the empty
+    /// name is reserved for the built-in default group).
+    pub fn add_group(&mut self, name: &str, color: &str) {
+        let name = name.trim();
+        if name.is_empty() || self.cache.groups.iter().any(|g| g.name == name) {
+            return;
+        }
+        self.cache.groups.push(Group {
+            name: name.to_string(),
+            color: color.to_string(),
+        });
+    }
+
+    /// Remove the group at `idx` (the default "" group is protected). Sessions
+    /// that referenced it fall back to the default group.
+    pub fn remove_group_at(&mut self, idx: usize) {
+        let Some(g) = self.cache.groups.get(idx) else {
+            return;
+        };
+        if g.name.is_empty() {
+            return;
+        }
+        let name = g.name.clone();
+        self.cache.groups.remove(idx);
+        for s in self.cache.sessions.iter_mut() {
+            if s.group == name {
+                s.group.clear();
+            }
+        }
+    }
+
+    /// Rename the group at `idx` (default group protected; empty / duplicate new
+    /// names ignored), cascading the change to every session that referenced it.
+    pub fn rename_group_at(&mut self, idx: usize, new_name: &str) {
+        let new_name = new_name.trim().to_string();
+        if new_name.is_empty() {
+            return;
+        }
+        let Some(g) = self.cache.groups.get(idx) else {
+            return;
+        };
+        let old = g.name.clone();
+        if old.is_empty() || old == new_name || self.cache.groups.iter().any(|x| x.name == new_name)
+        {
+            return;
+        }
+        self.cache.groups[idx].name = new_name.clone();
+        for s in self.cache.sessions.iter_mut() {
+            if s.group == old {
+                s.group = new_name.clone();
+            }
+        }
+    }
+
+    pub fn set_group_color_at(&mut self, idx: usize, color: &str) {
+        if let Some(g) = self.cache.groups.get_mut(idx) {
+            g.color = color.to_string();
+        }
+    }
+
+    /// Move the group at `idx` one slot up (dir < 0) or down (dir > 0).
+    pub fn move_group(&mut self, idx: usize, dir: i32) {
+        let len = self.cache.groups.len();
+        let target = idx as i32 + dir;
+        if idx >= len || target < 0 || target as usize >= len {
+            return;
+        }
+        self.cache.groups.swap(idx, target as usize);
     }
 
     pub fn ai_skill(&self) -> &AiSkillConfig {
@@ -742,6 +866,43 @@ mod tests {
         let loaded = ConfigStore::load_at(path).unwrap();
         assert!(loaded.auto_check_update()); // 缺字段默认开
         assert_eq!(loaded.skipped_version(), None);
+    }
+
+    #[test]
+    fn groups_seed_presets_and_cascade_rename_delete_move() {
+        let path = test_path("groups-cascade");
+        let mut store = ConfigStore::load_at(path).unwrap();
+
+        // Fresh config seeds the four presets (default "" first).
+        let names: Vec<&str> = store.groups().iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["", "本地", "测试", "生产"]);
+
+        // A session that lives in the 测试 group.
+        store.upsert(Session {
+            group: "测试".into(),
+            ..Session::new_empty()
+        });
+        let sid = store.sessions()[0].id.clone();
+
+        // Rename 测试 → 预发 cascades to the session.
+        store.rename_group_at(2, "预发");
+        assert_eq!(store.groups()[2].name, "预发");
+        assert_eq!(store.get(&sid).unwrap().group, "预发");
+
+        // The default "" group (idx 0) is protected from rename and delete.
+        store.rename_group_at(0, "X");
+        store.remove_group_at(0);
+        assert_eq!(store.groups()[0].name, "");
+
+        // Deleting 预发 drops its session back to the default ("").
+        store.remove_group_at(2);
+        assert!(store.groups().iter().all(|g| g.name != "预发"));
+        assert_eq!(store.get(&sid).unwrap().group, "");
+
+        // Reorder: move 本地 (idx 1) down one slot.
+        store.move_group(1, 1);
+        assert_eq!(store.groups()[1].name, "生产");
+        assert_eq!(store.groups()[2].name, "本地");
     }
 
     #[test]
