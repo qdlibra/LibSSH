@@ -96,7 +96,7 @@ component MountRow inherits Rectangle {
                 font-weight: 500;
                 color: Theme.text-dim;
                 horizontal-stretch: 1;
-                overflow: elide;
+                overflow: clip;
                 vertical-alignment: center;
             }
             Text {
@@ -165,7 +165,7 @@ component NetSection inherits VerticalLayout {
                     color: Theme.text-dim;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
-                    overflow: elide;
+                    overflow: clip;
                 }
                 Text {
                     text: "\u{E5CF}";   // expand_more
@@ -404,7 +404,7 @@ export component Sidebar inherits Rectangle {
                                     color: Theme.text;
                                     font-size: 13px;
                                     font-weight: 600;
-                                    overflow: elide;
+                                    overflow: clip;
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
                                 }

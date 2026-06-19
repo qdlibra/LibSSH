@@ -175,7 +175,7 @@ component SessionRow inherits Rectangle {
                 color: Theme.text;
                 font-size: 13px;
                 font-weight: 500;
-                overflow: elide;
+                overflow: clip;
                 horizontal-stretch: 1;
                 vertical-alignment: center;
             }
@@ -550,7 +550,7 @@ export component Welcome inherits Rectangle {
                     color: Theme.text;
                     font-size: Theme.fs-md;
                     font-weight: 600;
-                    overflow: elide;
+                    overflow: clip;
                 }
 
                 Rectangle { vertical-stretch: 1; }

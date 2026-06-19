@@ -332,7 +332,7 @@ export component SftpPanel inherits Rectangle {
                                     font-weight: node.depth == 0 ? 600 : 400;
                                     font-size: 12px;
                                     horizontal-stretch: 1;
-                                    overflow: elide;
+                                    overflow: clip;
                                     vertical-alignment: center;
                                 }
                             }
@@ -548,7 +548,7 @@ export component SftpPanel inherits Rectangle {
                                     color: Theme.text;
                                     font-size: Theme.fs-sm;
                                     horizontal-stretch: 1;
-                                    overflow: elide;
+                                    overflow: clip;
                                     vertical-alignment: center;
                                 }
                                 Text {
@@ -649,7 +649,7 @@ export component SftpPanel inherits Rectangle {
                 font-size: Theme.fs-xs;
                 vertical-alignment: center;
                 height: parent.height;
-                overflow: elide;
+                overflow: clip;
                 width: parent.width - 16px;
             }
         }

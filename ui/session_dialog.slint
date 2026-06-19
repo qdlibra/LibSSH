@@ -133,7 +133,7 @@ export component SessionDialog inherits Rectangle {
                             font-size: Theme.fs-md;
                             vertical-alignment: center;
                             horizontal-stretch: 1;
-                            overflow: elide;
+                            overflow: clip;
                         }
                         Text {
                             text: "\u{E5CF}";   // expand_more
@@ -183,7 +183,7 @@ export component SessionDialog inherits Rectangle {
                                             font-size: Theme.fs-md;
                                             vertical-alignment: center;
                                             horizontal-stretch: 1;
-                                            overflow: elide;
+                                            overflow: clip;
                                         }
                                         if g.name == root.draft-group : Text {
                                             text: "\u{E5CA}";   // check
@@ -373,7 +373,7 @@ export component SessionDialog inherits Rectangle {
                             : Theme.text-muted;
                         font-size: Theme.fs-sm;
                         wrap: word-wrap;
-                        overflow: elide;
+                        overflow: clip;
                         vertical-alignment: top;
                     }
                 }

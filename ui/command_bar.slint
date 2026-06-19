@@ -173,7 +173,7 @@ export component CommandBar inherits Rectangle {
                     font-family: Theme.font-mono;
                     font-size: Theme.fs-sm;
                     vertical-alignment: center;
-                    overflow: elide;
+                    overflow: clip;
                 }
             }
         }
@@ -228,7 +228,7 @@ export component CommandBar inherits Rectangle {
                         color: Theme.text-primary;
                         font-size: Theme.fs-sm;
                         width: 30%;
-                        overflow: elide;
+                        overflow: clip;
                         vertical-alignment: center;
                     }
                     Text {
@@ -237,7 +237,7 @@ export component CommandBar inherits Rectangle {
                         font-family: Theme.font-mono;
                         font-size: Theme.fs-xs;
                         horizontal-stretch: 1;
-                        overflow: elide;
+                        overflow: clip;
                         vertical-alignment: center;
                     }
                     Rectangle {

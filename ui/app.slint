@@ -523,7 +523,7 @@ export component AppWindow inherits Window {
                         color: root.download-dir == "" ? Theme.text-muted : Theme.text-primary;
                         font-size: Theme.fs-sm;
                         vertical-alignment: center;
-                        overflow: elide;
+                        overflow: clip;
                     }
                 }
 
@@ -608,7 +608,7 @@ export component AppWindow inherits Window {
                                         color: Theme.text-primary;
                                         font-size: Theme.fs-xs;
                                         horizontal-stretch: 1;
-                                        overflow: elide;
+                                        overflow: clip;
                                         vertical-alignment: center;
                                     }
                                     Text {
@@ -820,7 +820,7 @@ export component AppWindow inherits Window {
                     color: Theme.text-primary;
                     font-size: Theme.fs-md;
                     font-weight: 700;
-                    overflow: elide;
+                    overflow: clip;
                 }
                 Text {
                     text: root.alert-message;
@@ -1470,7 +1470,7 @@ export component AppWindow inherits Window {
                         color: Theme.text-muted;
                         font-size: Theme.fs-xs;
                         horizontal-stretch: 1;
-                        overflow: elide;
+                        overflow: clip;
                         vertical-alignment: center;
                     }
                     Rectangle {
@@ -1539,7 +1539,7 @@ export component AppWindow inherits Window {
                     color: Theme.text-muted;
                     font-size: Theme.fs-xs;
                     height: 14px;
-                    overflow: elide;
+                    overflow: clip;
                 }
             }
         }
