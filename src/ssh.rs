@@ -19,6 +19,18 @@ use tokio::task::JoinHandle;
 use crate::config::{AuthMethod, Session};
 use crate::i18n::t;
 
+// `known_hosts.rs` 存在于 src/ 但未在 crate 根（main.rs）注册为模块；本轮硬约束是
+// 只改 ssh.rs，故在此把它挂为 ssh 的子模块（不触碰 main.rs）。known_hosts.rs 内部
+// 不含任何 crate::/super::/self:: 引用，作为子模块挂载不影响其路径解析。
+//
+// allow(dead_code)：作为私有子模块挂载后，其公开 API 的可见面收敛到本 crate 内；
+// `verify`/`remember` 已被 check_server_key 调用，但 `fingerprint` 留待后续「带指纹的
+// 终端报错/UI」（本轮明确不做）才接入，现阶段无调用方。不能改 known_hosts.rs，故在
+// 模块声明处统一豁免，避免 clippy -D warnings 因这一处未用公开函数而失败。
+#[allow(dead_code)]
+#[path = "known_hosts.rs"]
+mod known_hosts;
+
 /// Metadata for one remote filesystem entry returned by SFTP listing.
 #[derive(Debug, Clone)]
 pub struct RemoteEntry {
@@ -254,7 +266,10 @@ pub(crate) fn load_private_key_for_auth(raw: &str) -> Result<PrivateKeyWithHashA
 pub async fn test_connection(session: Session) -> Result<()> {
     let attempt = async move {
         let config = Arc::new(client::Config::default());
-        let handler = ClientHandler {};
+        let handler = ClientHandler {
+            host: session.host.clone(),
+            port: session.port,
+        };
         let addr = format!("{}:{}", session.host, session.port);
         let mut handle = match crate::proxy::resolve(&session.proxy) {
             Some(proxy) => {
@@ -314,7 +329,10 @@ pub async fn run_exec(session: Session, command: &str) -> Result<ExecResult> {
         inactivity_timeout: Some(std::time::Duration::from_secs(60 * 10)),
         ..<_>::default()
     });
-    let handler = ClientHandler {};
+    let handler = ClientHandler {
+        host: session.host.clone(),
+        port: session.port,
+    };
     let addr = format!("{}:{}", session.host, session.port);
     let mut handle = match crate::proxy::resolve(&session.proxy) {
         Some(proxy) => {
@@ -455,7 +473,10 @@ async fn run_session(
         keepalive_max: 3,
         ..<_>::default()
     });
-    let handler = ClientHandler {};
+    let handler = ClientHandler {
+        host: session.host.clone(),
+        port: session.port,
+    };
     let addr = format!("{}:{}", session.host, session.port);
     let mut handle = match crate::proxy::resolve(&session.proxy) {
         Some(proxy) => {
@@ -914,7 +935,10 @@ fn longest_overlap(haystack: &[u8], needle: &[u8]) -> usize {
         .unwrap_or(0)
 }
 
-struct ClientHandler;
+struct ClientHandler {
+    host: String,
+    port: u16,
+}
 
 #[async_trait]
 impl Handler for ClientHandler {
@@ -922,9 +946,18 @@ impl Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKey,
+        server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        use self::known_hosts::HostKeyStatus;
+        match known_hosts::verify(&self.host, self.port, server_public_key) {
+            HostKeyStatus::Match => Ok(true),
+            HostKeyStatus::Unknown => {
+                // 首次见到该主机：记住后放行（TOFU 静默信任首次）。
+                let _ = known_hosts::remember(&self.host, self.port, server_public_key);
+                Ok(true)
+            }
+            HostKeyStatus::Mismatch => Ok(false), // 密钥变化（可能 MITM）→ 拒绝握手
+        }
     }
 
     async fn data(
