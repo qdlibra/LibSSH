@@ -556,6 +556,16 @@ impl ConfigStore {
         self.cache.sessions.iter().find(|s| s.id == id)
     }
 
+    /// 解析跳板会话：按 `jump_session_id` 查另一个已保存会话并克隆返回（不解密密码）。
+    /// 自跳 / 空 id / 不存在 → None。调用方负责对返回值做 `resolve_session_password`。
+    pub fn resolve_jump(&self, session: &Session) -> Option<Session> {
+        let id = session.jump_session_id.as_deref()?;
+        if id.is_empty() || id == session.id {
+            return None;
+        }
+        self.get(id).cloned()
+    }
+
     pub fn download_dir(&self) -> &str {
         &self.cache.download_dir
     }
@@ -1136,5 +1146,34 @@ mod tests {
         assert_eq!(v.len(), 2);
         assert_eq!(v[0].bind_port, 8080);
         assert_eq!(v[1].dest_host, "db");
+    }
+
+    #[test]
+    fn resolve_jump_finds_other_session_and_guards_self_and_missing() {
+        let path = test_path("resolve-jump");
+        let mut store = ConfigStore::load_at(path).unwrap();
+        let mut bastion = Session::new_empty();
+        bastion.id = "bastion".into();
+        bastion.host = "jump.example".into();
+        store.upsert(bastion);
+        let mut target = Session::new_empty();
+        target.id = "tgt".into();
+        target.jump_session_id = Some("bastion".into());
+        store.upsert(target.clone());
+
+        // 正常解析
+        assert_eq!(store.resolve_jump(&target).unwrap().host, "jump.example");
+        // 自跳 → None
+        let mut self_jump = target.clone();
+        self_jump.jump_session_id = Some("tgt".into());
+        assert!(store.resolve_jump(&self_jump).is_none());
+        // 不存在的 id → None
+        let mut missing = target.clone();
+        missing.jump_session_id = Some("ghost".into());
+        assert!(store.resolve_jump(&missing).is_none());
+        // 无跳板 → None
+        let mut none = target.clone();
+        none.jump_session_id = None;
+        assert!(store.resolve_jump(&none).is_none());
     }
 }
