@@ -191,6 +191,9 @@ export component AppWindow inherits Window {
     in-out property <string> dialog-group;
     in-out property <string> dialog-password;
     in-out property <string> dialog-key-path;
+    in-out property <string> dialog-jump-session-id;
+    in-out property <string> dialog-tunnels-text;
+    in property <[GroupInfo]> dialog-jump-candidates;
     in-out property <string> dialog-test-status: "idle";  // "idle" | "testing" | "ok" | "fail"
     in-out property <string> dialog-test-message;
 
@@ -1409,6 +1412,9 @@ export component AppWindow inherits Window {
         groups: root.groups;
         draft-password <=> root.dialog-password;
         draft-key-path <=> root.dialog-key-path;
+        draft-jump-session-id <=> root.dialog-jump-session-id;
+        draft-tunnels-text <=> root.dialog-tunnels-text;
+        jump-candidates: root.dialog-jump-candidates;
         test-status <=> root.dialog-test-status;
         test-message <=> root.dialog-test-message;
         submit(draft) => { root.session-dialog-submit(draft); }

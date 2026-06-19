@@ -350,3 +350,12 @@ msgstr "Servers are grouped in this order on the quick-connect page."
 
 msgid "New connection"
 msgstr "New connection"
+
+msgid "Jump host (via saved session)"
+msgstr "Jump host (via saved session)"
+
+msgid "Direct (no jump)"
+msgstr "Direct (no jump)"
+
+msgid "Local forwards (one per line: [bind:]port:host:port)"
+msgstr "Local forwards (one per line: [bind:]port:host:port)"

@@ -350,3 +350,12 @@ msgstr "快速连接页将按此顺序分组展示服务器。"
 
 msgid "New connection"
 msgstr "新建连接"
+
+msgid "Jump host (via saved session)"
+msgstr "跳板机（经已保存会话）"
+
+msgid "Direct (no jump)"
+msgstr "直连（不经跳板）"
+
+msgid "Local forwards (one per line: [bind:]port:host:port)"
+msgstr "本地转发（每行一条：[bind:]端口:主机:端口）"
