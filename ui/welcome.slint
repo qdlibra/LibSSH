@@ -170,14 +170,27 @@ component SessionRow inherits Rectangle {
                     vertical-alignment: center;
                 }
             }
-            Text {
-                text: session.name;
-                color: Theme.text;
-                font-size: 13px;
-                font-weight: 500;
-                overflow: clip;
+            // 名称列含 CJK：在 Finder/launchd 启动套用系统 zh-Hans-CN per-app locale 时，
+            // 若 Text 自身 horizontal-stretch 且处于 preferred-width:0 的弹性 cell，parley
+            // 会把 CJK 不可断整词宽度求解为 0 → 中文整条不渲染（终端继承非中文 locale 不触发，
+            // __CFBundleIdentifier 注入也复现不出，必须真机 Finder 启动验证）。修复：用 stretch
+            // 的 Rectangle 承担列宽/对齐/裁剪，Text 不参与父宽度协商（不设 width、不 stretch，
+            // 仅 x:0 左对齐、用内容宽），即稳定渲染。注意：Text 不可设 width:parent.width，
+            // 会与 Rectangle 形成循环依赖而重新坍缩。见知识库
+            // 2026-06-21-libssh-cjk-connection-name-finder-zh-locale-clip-preferred-width-collapse。
+            Rectangle {
                 horizontal-stretch: 1;
-                vertical-alignment: center;
+                clip: true;
+                Text {
+                    x: 0;
+                    height: parent.height;
+                    text: session.name;
+                    color: Theme.text;
+                    font-size: 13px;
+                    font-weight: 500;
+                    horizontal-alignment: left;
+                    vertical-alignment: center;
+                }
             }
         }
 
