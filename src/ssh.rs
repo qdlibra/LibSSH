@@ -267,6 +267,27 @@ pub(crate) fn load_private_key_for_auth(raw: &str) -> Result<PrivateKeyWithHashA
         .context("invalid private key / hash algorithm combination")
 }
 
+/// 交互式长连接（终端 PTY、SFTP）共用的客户端配置。
+///
+/// **keepalive 是这两条独立连接的生命线**：每 60s 发一次 SSH keepalive
+/// （keepalive@openssh.com）。断网 / 电脑休眠唤醒后 TCP 可能已半开——既不再有
+/// 数据、也收不到 FIN，`channel.wait()` 会永久挂起、UI 卡在「已连接」；纯空闲
+/// 连接也会被中间 NAT / 防火墙静默回收。keepalive 主动探测，连续 `keepalive_max`
+/// 次无响应即判定断开，russh 随即关闭会话（终端据此走 Closed 流程并自动重连）。
+/// `inactivity_timeout` 仅作兜底，有 keepalive 时通常不会先触发。
+///
+/// 终端与 SFTP **必须共用本函数**：两者是同一个 tab 下的两条独立 TCP 连接，若只给
+/// 一条配 keepalive，另一条会在空闲期被静默断开——SFTP 曾因漏配而在终端仍正常时
+/// 报「列目录失败 / session closed」。
+pub(crate) fn keepalive_client_config() -> client::Config {
+    client::Config {
+        inactivity_timeout: Some(std::time::Duration::from_secs(60 * 10)),
+        keepalive_interval: Some(std::time::Duration::from_secs(60)),
+        keepalive_max: 3,
+        ..<_>::default()
+    }
+}
+
 /// 按会话配置测试连通性：TCP/代理直连 + SSH 握手 + 身份认证，成功即断开。
 /// 整体 20 秒超时（覆盖 DNS、TCP、握手、认证任何一步卡住的情况）。
 pub async fn test_connection(session: Session) -> Result<()> {
@@ -575,19 +596,9 @@ async fn run_session(
         session.port
     )));
 
-    let config = Arc::new(client::Config {
-        // 兜底：完全无活动 10 分钟则断开（监控流通常持续喂活，实际主要靠下面的
-        // keepalive 主动探测）。
-        inactivity_timeout: Some(std::time::Duration::from_secs(60 * 10)),
-        // 应用层心跳：每 60s 发一次 SSH keepalive（keepalive@openssh.com）。
-        // 断网 / 电脑休眠唤醒后 TCP 可能已半开——既不再有数据、也收不到 FIN，
-        // channel.wait() 会永久挂起、UI 状态卡在「已连接」。keepalive 主动探测，
-        // 连续 keepalive_max 次无响应即判定断开，russh 关闭会话 → channel.wait()
-        // 返回 → 走 Closed 流程把状态改为「已断开」（并按既有逻辑自动重连）。
-        keepalive_interval: Some(std::time::Duration::from_secs(60)),
-        keepalive_max: 3,
-        ..<_>::default()
-    });
+    // 终端 PTY 连接：keepalive 配置见 keepalive_client_config（与 SFTP 共用，
+    // 防止两条独立连接的保活配置再次分叉）。
+    let config = Arc::new(keepalive_client_config());
     let (mut handle, _jump_keepalive) = connect_transport(&session, &jump, config, &events).await?;
 
     let authed = match session.auth {
@@ -1177,6 +1188,26 @@ fn _assert_handle_send() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keepalive_client_config_keeps_idle_connections_alive() {
+        // 终端 PTY 与 SFTP 是同一个 tab 下的两条独立 TCP 长连接，共用本配置。
+        // keepalive 缺失会让空闲的那条（用户只用终端时即 SFTP）被
+        // inactivity_timeout / 中间 NAT 静默断开，之后 read_dir / read 报
+        // session closed——本测试锚定 keepalive 不变量，防止再次回归。
+        let cfg = keepalive_client_config();
+        assert_eq!(
+            cfg.keepalive_interval,
+            Some(std::time::Duration::from_secs(60)),
+            "必须周期性发送 SSH keepalive 主动保活"
+        );
+        assert_eq!(cfg.keepalive_max, 3, "连续无响应判定断开的次数");
+        assert_eq!(
+            cfg.inactivity_timeout,
+            Some(std::time::Duration::from_secs(60 * 10)),
+            "兜底的无活动断开超时"
+        );
+    }
 
     #[tokio::test]
     async fn test_connection_fails_fast_on_closed_port() {

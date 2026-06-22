@@ -156,10 +156,10 @@ async fn run_sftp(
         t("SFTP 连接中...", "SFTP connecting...").into(),
     ));
 
-    let config = Arc::new(client::Config {
-        inactivity_timeout: Some(Duration::from_secs(60 * 30)),
-        ..<_>::default()
-    });
+    // 终端与 SFTP 共用同一份 keepalive 配置：SFTP 是独立于终端 PTY 的另一条 TCP
+    // 长连接，缺了 keepalive 会在用户只用终端、不碰文件管理器的空闲期被
+    // inactivity_timeout / 中间 NAT 静默断开，之后 read_dir/read 全部 session closed。
+    let config = Arc::new(crate::ssh::keepalive_client_config());
     let addr = format!("{}:{}", session.host, session.port);
     let mut handle = match crate::proxy::resolve(&session.proxy) {
         Some(proxy) => {
