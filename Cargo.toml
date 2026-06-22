@@ -1,6 +1,6 @@
 [package]
 name = "LibSSH"
-version = "0.2.14"
+version = "0.2.15"
 edition = "2021"
 authors = ["LibSSH contributors"]
 description = "A lightweight FinalShell-style SSH/terminal client written in Rust + Slint"
