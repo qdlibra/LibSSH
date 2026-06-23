@@ -259,44 +259,47 @@ fn start_local_sampler(
     local_snap: LocalSnap,
     local_net_hist: NetHist,
 ) {
-    let sampler = Rc::new(RefCell::new(SystemSampler::new()));
+    let interval = SystemSampler::recommended_interval();
 
+    // 重活(CPU/内存/网络/磁盘等系统查询)放到专属后台线程,只把结果写入共享
+    // 快照,绝不从这里直接碰 UI。原来每秒在 UI 主线程调用 sample(),其中磁盘
+    // 枚举单次 ~25ms(加上 SystemSampler::new() 启动 ~46ms),周期性卡主线程、
+    // 拉高 CPU/耗电。
+    //
+    // 注意:不要用 invoke_from_event_loop 从后台线程推 UI——实测在 Slint 1.8 +
+    // winit/macOS 下,每秒从外部线程唤醒事件循环会让窗口进入持续重绘(空闲
+    // CPU 飙到 ~25%,main 线程满是 glSwap)。UI 刷新必须留在主线程定时器里。
     {
-        let snap = sampler.borrow_mut().sample();
-        if let Ok(mut local) = local_snap.lock() {
-            *local = snap;
-        }
-        if let Ok(mut hist) = local_net_hist.lock() {
-            push_ring(
-                &mut hist,
-                local_snap.lock().unwrap().net_bytes_per_sec as f32,
-            );
-        }
-        refresh_sidebar(window, &statuses, &local_snap, &local_net_hist);
+        let snap_store = local_snap.clone();
+        let hist_store = local_net_hist.clone();
+        std::thread::Builder::new()
+            .name("local-sampler".into())
+            .spawn(move || {
+                let mut sampler = SystemSampler::new();
+                loop {
+                    let snap = sampler.sample();
+                    if let Ok(mut hist) = hist_store.lock() {
+                        push_ring(&mut hist, snap.net_bytes_per_sec as f32);
+                    }
+                    if let Ok(mut local) = snap_store.lock() {
+                        *local = snap;
+                    }
+                    std::thread::sleep(interval);
+                }
+            })
+            .expect("spawn local-sampler thread");
     }
 
+    // UI 刷新留在主线程的 Slint Timer:它与事件循环深度集成,只在属性真正变化
+    // 时重绘、静止时正确回到等待(实测 main 线程 ~94% 时间阻塞在事件等待)。
+    // 回调极轻——只读共享快照 + set 属性,不做任何系统调用。
     let weak = window.as_weak();
-    let tick_sampler = sampler.clone();
-    let tick_statuses = statuses.clone();
-    let tick_local = local_snap.clone();
-    let tick_hist = local_net_hist.clone();
     let timer = Timer::default();
-    timer.start(
-        TimerMode::Repeated,
-        SystemSampler::recommended_interval(),
-        move || {
-            let snap = tick_sampler.borrow_mut().sample();
-            if let Ok(mut hist) = tick_hist.lock() {
-                push_ring(&mut hist, snap.net_bytes_per_sec as f32);
-            }
-            if let Ok(mut local) = tick_local.lock() {
-                *local = snap;
-            }
-            if let Some(w) = weak.upgrade() {
-                refresh_sidebar(&w, &tick_statuses, &tick_local, &tick_hist);
-            }
-        },
-    );
+    timer.start(TimerMode::Repeated, interval, move || {
+        if let Some(w) = weak.upgrade() {
+            refresh_sidebar(&w, &statuses, &local_snap, &local_net_hist);
+        }
+    });
     Box::leak(Box::new(timer));
 }
 

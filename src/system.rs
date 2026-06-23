@@ -4,6 +4,23 @@ use std::time::Duration;
 
 use sysinfo::{Disks, Networks, System};
 
+/// 磁盘枚举节流间隔。CPU/内存/网络每秒刷新,但磁盘容量变化极慢,单次枚举在
+/// macOS 上要 ~25ms(全量查询每个 APFS 卷容量),每秒做纯属浪费 CPU 并周期性
+/// 唤醒存储子系统拖累笔记本续航。30s 一次对 UI 完全无感。
+const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// 磁盘是否到了该重新枚举的时刻。抽成纯函数便于单测。
+fn disk_refresh_due(
+    last: Option<std::time::Instant>,
+    now: std::time::Instant,
+    interval: Duration,
+) -> bool {
+    match last {
+        None => true,
+        Some(t) => now.duration_since(t) >= interval,
+    }
+}
+
 /// Snapshot passed to the UI each tick.
 #[derive(Debug, Clone, Default)]
 pub struct SystemSnapshot {
@@ -29,6 +46,11 @@ pub struct SystemSampler {
     last_rx_total: u64,
     last_tx_total: u64,
     last_instant: std::time::Instant,
+    /// 缓存的磁盘列表 (mount, available, total)。磁盘容量变化极慢,无需每次
+    /// 采样都全量枚举(macOS 上单次 ~25ms),见 DISK_REFRESH_INTERVAL。
+    cached_disks: Vec<(String, u64, u64)>,
+    /// 上次真正枚举磁盘的时刻;None 表示尚未枚举。
+    last_disk_refresh: Option<std::time::Instant>,
 }
 
 impl SystemSampler {
@@ -39,6 +61,9 @@ impl SystemSampler {
         let last_rx_total = nets.values().map(|d| d.total_received()).sum();
         let last_tx_total = nets.values().map(|d| d.total_transmitted()).sum();
         let disks = Disks::new_with_refreshed_list();
+        // new_with_refreshed_list 已枚举一次,直接填充缓存并标记时间戳,
+        // 这样首次 sample() 在 30s 内不会再次枚举。
+        let cached_disks = Self::collect_disks(&disks);
         Self {
             sys,
             nets,
@@ -46,12 +71,30 @@ impl SystemSampler {
             last_rx_total,
             last_tx_total,
             last_instant: std::time::Instant::now(),
+            cached_disks,
+            last_disk_refresh: Some(std::time::Instant::now()),
         }
     }
 
     /// Recommended poll interval for a UI sidebar.
     pub fn recommended_interval() -> Duration {
         Duration::from_millis(1000)
+    }
+
+    /// 从 sysinfo Disks 提取 UI 需要的 (mount, available, total) 三元组,
+    /// 过滤掉容量为 0 的伪条目。new() 与 sample() 共用。
+    fn collect_disks(disks: &Disks) -> Vec<(String, u64, u64)> {
+        disks
+            .iter()
+            .map(|d| {
+                (
+                    d.mount_point().to_string_lossy().to_string(),
+                    d.available_space(),
+                    d.total_space(),
+                )
+            })
+            .filter(|(_, _, total)| *total > 0)
+            .collect()
     }
 
     pub fn sample(&mut self) -> SystemSnapshot {
@@ -92,19 +135,15 @@ impl SystemSampler {
         let net_rx_per_sec = (rx_delta as f64 / elapsed) as u64;
         let net_tx_per_sec = (tx_delta as f64 / elapsed) as u64;
 
-        self.disks.refresh(true);
-        let disks: Vec<(String, u64, u64)> = self
-            .disks
-            .iter()
-            .map(|d| {
-                (
-                    d.mount_point().to_string_lossy().to_string(),
-                    d.available_space(),
-                    d.total_space(),
-                )
-            })
-            .filter(|(_, _, total)| *total > 0)
-            .collect();
+        // 磁盘:节流枚举。容量变化极慢,DISK_REFRESH_INTERVAL 内复用缓存,
+        // 避免每秒在采样里做 ~25ms 的全量 APFS 卷查询(CPU/耗电主因)。
+        // 复用上面网络速率计算用的 `now`。
+        if disk_refresh_due(self.last_disk_refresh, now, DISK_REFRESH_INTERVAL) {
+            self.disks.refresh(true);
+            self.cached_disks = Self::collect_disks(&self.disks);
+            self.last_disk_refresh = Some(now);
+        }
+        let disks = self.cached_disks.clone();
 
         SystemSnapshot {
             cpu_percent,
@@ -429,6 +468,35 @@ mod cli_link {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disk_refresh_throttle_logic() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let iv = Duration::from_secs(30);
+        // 从未枚举 → 应枚举
+        assert!(disk_refresh_due(None, now, iv));
+        // 刚枚举 → 不应再枚举
+        assert!(!disk_refresh_due(Some(now), now, iv));
+        // 29s 前 → 不应
+        assert!(!disk_refresh_due(
+            Some(now - Duration::from_secs(29)),
+            now,
+            iv
+        ));
+        // 恰好 30s → 应(>= 边界)
+        assert!(disk_refresh_due(
+            Some(now - Duration::from_secs(30)),
+            now,
+            iv
+        ));
+        // 31s 前 → 应
+        assert!(disk_refresh_due(
+            Some(now - Duration::from_secs(31)),
+            now,
+            iv
+        ));
+    }
 
     #[test]
     fn formats_byte_rates() {
