@@ -58,7 +58,11 @@ component Meter inherits VerticalLayout {
             width: parent.width * clamp(percent, 0.0, 1.0);
             border-radius: 2.5px;
             background: percent < 0.6 ? Theme.ok : percent < 0.85 ? Theme.warn : Theme.danger;
-            animate width { duration: 500ms; easing: ease-out; }
+            // 不要 animate width:CPU/内存/Swap 百分比每秒采样都在波动,animate 会让
+            // Slint has_active_animations 长期为真 → CADisplayLink 持续 60fps 重绘整棵
+            // 元素树(终端大量 span 时每帧极重)→ CPU 飙升 → 百分比更乱 → 自维持正反馈,
+            // 静止也 120% CPU。资源是秒级采样,过渡动画无实际意义,直接更新即可让 Slint
+            // 在数据稳定时回到休眠。详见 Bug 知识库 2026-06-23 终端历史卡顿条目。
         }
     }
 
