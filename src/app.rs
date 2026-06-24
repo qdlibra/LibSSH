@@ -68,6 +68,10 @@ enum CsiState {
 struct TabStatus {
     host: String,
     state: u8,
+    /// 本会话是否曾成功建立（收到过 Connected）。用于区分"首次连接失败（配置/网络错，
+    /// 不自动重连）"与"曾连上后的意外断开（自动重连）"——重连期间 state 会被临时置 0
+    /// （连接中），不能再用 state==1 判断"曾连上"，故用此持久标志。
+    established: bool,
     /// 本轮断线已发起的自动重连次数；连接成功后清零。
     reconnect_attempts: u8,
     cpu: f32,
@@ -425,10 +429,12 @@ fn auto_reconnect_delay(attempt: u8) -> Option<std::time::Duration> {
         .then(|| std::time::Duration::from_secs(1u64 << attempt))
 }
 
-/// 意外断开是否安排自动重连：仅限「曾成功连接（state==1）、非用户主动关闭、
-/// 重试次数未用尽」。首次连接失败（配置/网络错误）重试无意义，交给失败弹窗。
-fn should_auto_reconnect(was_user_close: bool, previous_state: Option<u8>, attempts: u8) -> bool {
-    !was_user_close && previous_state == Some(1) && attempts < 3
+/// 意外断开是否安排自动重连：仅限「曾成功建立连接、非用户主动关闭、重试次数未用尽」。
+/// 用持久的 `established` 而非 `state`：重连期间 state 会被临时置 0（连接中），
+/// 若用 state==1 判断会导致"重连一次失败后不再续连"。首次连接失败（配置/网络错误）
+/// established=false，重试无意义，交给失败弹窗。
+fn should_auto_reconnect(was_user_close: bool, established: bool, attempts: u8) -> bool {
+    !was_user_close && established && attempts < 3
 }
 
 fn show_connection_failed_alert(win: &AppWindow, reason: &str) {
@@ -3072,6 +3078,7 @@ fn apply_session_event_to_window(
             });
             if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
                 st.state = 1;
+                st.established = true;
                 st.reconnect_attempts = 0;
             }
             if win.get_active_tab_id().as_str() == tab_id {
@@ -3087,11 +3094,15 @@ fn apply_session_event_to_window(
                 let was_user_close = user_closing.lock().unwrap().remove(tab_id);
                 let mut statuses = statuses.lock().unwrap();
                 let previous_state = statuses.get(tab_id).map(|st| st.state);
+                let established = statuses
+                    .get(tab_id)
+                    .map(|st| st.established)
+                    .unwrap_or(false);
                 let attempts = statuses
                     .get(tab_id)
                     .map(|st| st.reconnect_attempts)
                     .unwrap_or(0);
-                let auto = should_auto_reconnect(was_user_close, previous_state, attempts);
+                let auto = should_auto_reconnect(was_user_close, established, attempts);
                 if let Some(st) = statuses.get_mut(tab_id) {
                     st.state = 2;
                     if auto {
@@ -4078,13 +4089,23 @@ mod tests {
 
     #[test]
     fn auto_reconnect_only_after_established_non_user_close() {
-        // (was_user_close, previous_state, attempts_so_far) → 是否安排自动重连
-        assert!(should_auto_reconnect(false, Some(1), 0));
-        assert!(should_auto_reconnect(false, Some(1), 2));
-        assert!(!should_auto_reconnect(true, Some(1), 0)); // 用户主动关
-        assert!(!should_auto_reconnect(false, Some(0), 0)); // 从未连上（配置错）
-        assert!(!should_auto_reconnect(false, None, 0)); // 状态未知
-        assert!(!should_auto_reconnect(false, Some(1), 3)); // 次数用尽
+        // (was_user_close, established, attempts_so_far) → 是否安排自动重连
+        assert!(should_auto_reconnect(false, true, 0));
+        assert!(should_auto_reconnect(false, true, 2));
+        assert!(!should_auto_reconnect(true, true, 0)); // 用户主动关
+        assert!(!should_auto_reconnect(false, false, 0)); // 从未连上（配置错）
+        assert!(!should_auto_reconnect(false, true, 3)); // 次数用尽
+    }
+
+    #[test]
+    fn auto_reconnect_survives_failed_attempt_state_reset() {
+        // 回归：曾连上后意外断开会触发重连，而重连期间 state 被临时置 0（连接中）。
+        // 若用 state==1 判断"曾连上"，重连一次失败后 previous_state 变 0 → 不再续连，
+        // 退避只生效一次。established 持久为 true，故 attempts=1、2 仍应继续重试，
+        // 直到次数用尽（attempts=3）才停。
+        assert!(should_auto_reconnect(false, true, 1));
+        assert!(should_auto_reconnect(false, true, 2));
+        assert!(!should_auto_reconnect(false, true, 3));
     }
 
     #[test]

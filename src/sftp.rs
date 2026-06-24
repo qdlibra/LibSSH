@@ -159,52 +159,65 @@ async fn run_sftp(
     // 终端与 SFTP 共用同一份 keepalive 配置：SFTP 是独立于终端 PTY 的另一条 TCP
     // 长连接，缺了 keepalive 会在用户只用终端、不碰文件管理器的空闲期被
     // inactivity_timeout / 中间 NAT 静默断开，之后 read_dir/read 全部 session closed。
-    let config = Arc::new(crate::ssh::keepalive_client_config());
-    let addr = format!("{}:{}", session.host, session.port);
-    let mut handle = match crate::proxy::resolve(&session.proxy) {
-        Some(proxy) => {
-            let stream = crate::proxy::connect(&proxy, &session.host, session.port)
+    //
+    // 连接建立（握手 + 认证 + 开 sftp 子系统）整体限时 CONNECT_TIMEOUT（与终端
+    // run_session 对称）：握手阶段 keepalive/inactivity 尚未生效，缺超时会在"TCP
+    // 可达但 SSH 无响应"时永久卡在「SFTP 连接中…」。其后的长期命令循环不在超时内。
+    let connect = async {
+        let config = Arc::new(crate::ssh::keepalive_client_config());
+        let addr = format!("{}:{}", session.host, session.port);
+        let mut handle = match crate::proxy::resolve(&session.proxy) {
+            Some(proxy) => {
+                let stream = crate::proxy::connect(&proxy, &session.host, session.port)
+                    .await
+                    .with_context(|| format!("sftp proxy connect {} failed", addr))?;
+                client::connect_stream(config, stream, SftpClientHandler)
+                    .await
+                    .with_context(|| format!("sftp connect {} failed", addr))?
+            }
+            None => client::connect(config, addr.as_str(), SftpClientHandler)
                 .await
-                .with_context(|| format!("sftp proxy connect {} failed", addr))?;
-            client::connect_stream(config, stream, SftpClientHandler)
+                .with_context(|| format!("sftp connect {} failed", addr))?,
+        };
+
+        let authed = match session.auth {
+            AuthMethod::Password => handle
+                .authenticate_password(&session.user, session.password.as_str())
                 .await
-                .with_context(|| format!("sftp connect {} failed", addr))?
+                .context("sftp password auth failed")?,
+            AuthMethod::Key => {
+                let key_with_hash = load_private_key_for_auth(&session.private_key_path)
+                    .context("invalid private key")?;
+                handle
+                    .authenticate_publickey(&session.user, key_with_hash)
+                    .await
+                    .context("sftp publickey auth failed")?
+            }
+        };
+
+        if !authed {
+            return Err(anyhow!(t("SFTP 认证失败", "SFTP authentication failed")));
         }
-        None => client::connect(config, addr.as_str(), SftpClientHandler)
+
+        let channel = handle
+            .channel_open_session()
             .await
-            .with_context(|| format!("sftp connect {} failed", addr))?,
+            .context("open sftp channel")?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .context("request sftp subsystem")?;
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
+            .context("sftp handshake")?;
+        Ok::<_, anyhow::Error>((handle, sftp))
     };
 
-    let authed = match session.auth {
-        AuthMethod::Password => handle
-            .authenticate_password(&session.user, session.password.as_str())
-            .await
-            .context("sftp password auth failed")?,
-        AuthMethod::Key => {
-            let key_with_hash = load_private_key_for_auth(&session.private_key_path)
-                .context("invalid private key")?;
-            handle
-                .authenticate_publickey(&session.user, key_with_hash)
-                .await
-                .context("sftp publickey auth failed")?
-        }
+    // handle 须绑定到会话循环结束：后续上传管道用 &handle，drop 也会关闭整条 SSH 连接。
+    let (handle, sftp) = match tokio::time::timeout(crate::ssh::CONNECT_TIMEOUT, connect).await {
+        Ok(result) => result?,
+        Err(_) => return Err(anyhow!(t("SFTP 连接超时", "SFTP connection timed out"))),
     };
-
-    if !authed {
-        return Err(anyhow!(t("SFTP 认证失败", "SFTP authentication failed")));
-    }
-
-    let channel = handle
-        .channel_open_session()
-        .await
-        .context("open sftp channel")?;
-    channel
-        .request_subsystem(true, "sftp")
-        .await
-        .context("request sftp subsystem")?;
-    let sftp = SftpSession::new(channel.into_stream())
-        .await
-        .context("sftp handshake")?;
 
     let home = sftp
         .canonicalize(".")

@@ -288,6 +288,13 @@ pub(crate) fn keepalive_client_config() -> client::Config {
     }
 }
 
+/// 连接建立（DNS + TCP + SSH 握手 + 认证 + 开通道）的总超时。握手阶段 russh 的
+/// keepalive / inactivity_timeout 尚未生效（二者由连接建立后的后台任务驱动），
+/// 缺这层超时会在"TCP 可达但 SSH 无响应"（服务器重启中 / 防火墙黑洞 / 半开连接）时
+/// 永久阻塞 —— 重连便卡在「连接中」、状态机永远到不了「已断开」而无法恢复。
+/// 终端 run_session、SFTP run_sftp、连通性 test_connection 三处共用，防止分叉。
+pub(crate) const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// 按会话配置测试连通性：TCP/代理直连 + SSH 握手 + 身份认证，成功即断开。
 /// 整体 20 秒超时（覆盖 DNS、TCP、握手、认证任何一步卡住的情况）。
 pub async fn test_connection(session: Session) -> Result<()> {
@@ -342,7 +349,7 @@ pub async fn test_connection(session: Session) -> Result<()> {
         Ok(())
     };
 
-    match tokio::time::timeout(std::time::Duration::from_secs(20), attempt).await {
+    match tokio::time::timeout(CONNECT_TIMEOUT, attempt).await {
         Ok(result) => result,
         Err(_) => Err(anyhow!(t(
             "连接超时（20 秒）",
@@ -596,52 +603,62 @@ async fn run_session(
         session.port
     )));
 
-    // 终端 PTY 连接：keepalive 配置见 keepalive_client_config（与 SFTP 共用，
-    // 防止两条独立连接的保活配置再次分叉）。
-    let config = Arc::new(keepalive_client_config());
-    let (mut handle, _jump_keepalive) = connect_transport(&session, &jump, config, &events).await?;
+    // 连接建立（传输握手 + 认证 + 开 PTY 通道）整体限时 CONNECT_TIMEOUT：握手阶段
+    // russh 的 keepalive / inactivity_timeout 尚未生效，缺这层超时会在"TCP 可达但
+    // SSH 无响应"（服务器重启 / 防火墙黑洞 / 半开连接）时永久阻塞，使重连卡在「连接中」、
+    // 状态机永远到不了「已断开」而无法恢复。其后长期运行的事件循环不在超时内。
+    // keepalive 配置见 keepalive_client_config（与 SFTP 共用，防保活配置分叉）。
+    let connect = async {
+        let config = Arc::new(keepalive_client_config());
+        let (mut handle, jump_keepalive) =
+            connect_transport(&session, &jump, config, &events).await?;
 
-    let authed = match session.auth {
-        AuthMethod::Password => handle
-            .authenticate_password(&session.user, session.password.as_str())
-            .await
-            .context("password auth failed")?,
-        AuthMethod::Key => {
-            let key_with_hash = load_private_key_for_auth(&session.private_key_path)?;
-            handle
-                .authenticate_publickey(&session.user, key_with_hash)
+        let authed = match session.auth {
+            AuthMethod::Password => handle
+                .authenticate_password(&session.user, session.password.as_str())
                 .await
-                .context("publickey auth failed")?
+                .context("password auth failed")?,
+            AuthMethod::Key => {
+                let key_with_hash = load_private_key_for_auth(&session.private_key_path)?;
+                handle
+                    .authenticate_publickey(&session.user, key_with_hash)
+                    .await
+                    .context("publickey auth failed")?
+            }
+        };
+
+        if !authed {
+            let _ = handle
+                .disconnect(Disconnect::ByApplication, "auth failed", "")
+                .await;
+            bail!(t("认证失败", "authentication failed"));
         }
+
+        let channel = handle
+            .channel_open_session()
+            .await
+            .context("open session channel")?;
+        channel
+            .request_pty(
+                true,
+                "xterm-256color",
+                initial_cols,
+                initial_rows,
+                0,
+                0,
+                &[],
+            )
+            .await
+            .context("request PTY")?;
+        channel.request_shell(true).await.context("request shell")?;
+        Ok::<_, anyhow::Error>((handle, channel, jump_keepalive))
     };
 
-    if !authed {
-        let _ = events.send(SessionEvent::Closed(
-            t("认证失败", "authentication failed").into(),
-        ));
-        let _ = handle
-            .disconnect(Disconnect::ByApplication, "auth failed", "")
-            .await;
-        return Ok(());
-    }
-
-    let mut channel = handle
-        .channel_open_session()
-        .await
-        .context("open session channel")?;
-    channel
-        .request_pty(
-            true,
-            "xterm-256color",
-            initial_cols,
-            initial_rows,
-            0,
-            0,
-            &[],
-        )
-        .await
-        .context("request PTY")?;
-    channel.request_shell(true).await.context("request shell")?;
+    let (handle, mut channel, _jump_keepalive) =
+        match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+            Ok(result) => result?,
+            Err(_) => bail!(t("连接超时", "connection timed out")),
+        };
 
     let _ = events.send(SessionEvent::Connected);
     let _ = events.send(SessionEvent::Status(format!(
@@ -1209,6 +1226,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn connect_timeout_is_bounded() {
+        // 连接建立总超时必须存在且在合理范围：太短会误杀慢握手的正常连接，太长则
+        // "TCP 可达但 SSH 无响应"时用户要干等。run_session / run_sftp / test_connection
+        // 三处共用本常量，锚定防止有人改连接逻辑时漏掉超时（曾致重连永久卡「连接中」）。
+        assert!(
+            CONNECT_TIMEOUT >= std::time::Duration::from_secs(5)
+                && CONNECT_TIMEOUT <= std::time::Duration::from_secs(60),
+            "连接超时应在 5~60 秒之间，实际 {CONNECT_TIMEOUT:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_connection_fails_fast_on_closed_port() {
         // 绑定临时端口后立刻释放，对它发起连接必然失败（refused，
@@ -1226,7 +1255,7 @@ mod tests {
         let started = std::time::Instant::now();
         let result = test_connection(session).await;
         assert!(result.is_err());
-        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        assert!(started.elapsed() < CONNECT_TIMEOUT);
     }
 
     #[test]
