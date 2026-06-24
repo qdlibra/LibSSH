@@ -139,7 +139,12 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build release
-        run: cargo +stable build --release --locked
+        # 发版走 clean build（兑现 build.rs 的同名假设）：清掉缓存 target/ 中的 release
+        # 产物再重编，避免增量复用 stale 产物（历史教训：连接名中文反复消失，根因是
+        # 发版增量构建用了旧的 Slint UI codegen，而非 UI 代码本身有错）。
+        run: |
+          cargo +stable clean --release
+          cargo +stable build --release --locked
 
       - name: Package Linux
         if: runner.os == 'Linux'
