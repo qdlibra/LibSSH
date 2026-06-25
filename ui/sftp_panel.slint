@@ -87,6 +87,16 @@ export component SftpPanel inherits Rectangle {
     // 菜单上、行 has-hover 变 false，靠这个状态保持蓝色高亮不丢。
     property <int> selected-index: -1;
 
+    // 行右键菜单状态：菜单提到面板顶层做单实例覆盖层（见底部 row-menu-open
+    // 覆盖层）。右键时把目标 entry 与坐标快照到这里，菜单只读这些 property，
+    // 不依赖 for 的 entry 上下文——这样删除后 for 重建行也不会牵连到菜单。
+    property <bool>   row-menu-open: false;
+    property <length> menu-x;
+    property <length> menu-y;
+    property <string> menu-path;
+    property <string> menu-name;
+    property <bool>   menu-is-dir;
+
     // --- 名称输入对话框（重命名 / 新建文件 / 新建文件夹共用） --------------
     property <bool> name-dialog-open: false;
     property <int> name-dialog-mode: 0;        // 0=重命名 1=新建文件 2=新建文件夹
@@ -422,10 +432,6 @@ export component SftpPanel inherits Rectangle {
                                 ? Theme.accent-soft
                                 : transparent;
 
-                            // Right-click anchor (relative to this row).
-                            property <length> mx;
-                            property <length> my;
-
                             row-ta := TouchArea {
                                 mouse-cursor: pointer;
                                 clicked => { root.selected-index = i; }
@@ -440,65 +446,18 @@ export component SftpPanel inherits Rectangle {
                                 pointer-event(ev) => {
                                     if (ev.kind == PointerEventKind.down
                                             && ev.button == PointerEventButton.right) {
+                                        // 右键：把目标 entry 与菜单坐标快照到顶层 property，
+                                        // 由面板顶层的单实例覆盖层菜单读取显示。绝不在 for 行内
+                                        // 放弹层——删除/刷新会重建行，行内弹层被销毁会触发 Slint
+                                        // panic（即「连续删多个文件崩溃」根因）。坐标用 absolute-
+                                        // position 把鼠标位置从行坐标系换算到面板坐标系。
                                         root.selected-index = i;
-                                        row.mx = self.mouse-x;
-                                        row.my = self.mouse-y;
-                                        row-menu.show();
-                                    }
-                                }
-                            }
-
-                            // Right-click context menu (same set for files & dirs;
-                            // Open = enter dir / open file in the built-in editor).
-                            row-menu := PopupWindow {
-                                x: row.mx;
-                                y: row.my;
-                                width: 132px;
-                                height: 6 * 27px + 8px;
-                                Rectangle {
-                                    background: Theme.bg-panel;
-                                    border-radius: Theme.radius-sm;
-                                    border-width: 1px;
-                                    border-color: Theme.border-strong;
-                                    drop-shadow-blur: 12px;
-                                    drop-shadow-color: #00000060;
-                                    VerticalLayout {
-                                        padding: 4px;
-                                        spacing: 1px;
-                                        SftpMenuItem {
-                                            label: @tr("Open");
-                                            clicked => {
-                                                if (entry.is-dir) {
-                                                    root.loading-target = entry.full-path;
-                                                    root.navigate(entry.full-path);
-                                                } else {
-                                                    root.edit(entry.full-path);
-                                                }
-                                            }
-                                        }
-                                        SftpMenuItem {
-                                            label: @tr("Download");
-                                            clicked => { root.download(entry.full-path); }
-                                        }
-                                        SftpMenuItem {
-                                            label: @tr("Copy path");
-                                            clicked => { root.copy-path(entry.full-path); }
-                                        }
-                                        SftpMenuItem {
-                                            label: @tr("Rename");
-                                            clicked => {
-                                                root.open-name-dialog(0, entry.full-path, entry.name);
-                                            }
-                                        }
-                                        SftpMenuItem {
-                                            label: @tr("Delete");
-                                            tint: #d86c6c;
-                                            clicked => { root.delete(entry.full-path); }
-                                        }
-                                        SftpMenuItem {
-                                            label: @tr("Refresh");
-                                            clicked => { root.refresh(root.current-path); }
-                                        }
+                                        root.menu-x = self.absolute-position.x - root.absolute-position.x + self.mouse-x;
+                                        root.menu-y = self.absolute-position.y - root.absolute-position.y + self.mouse-y;
+                                        root.menu-path = entry.full-path;
+                                        root.menu-name = entry.name;
+                                        root.menu-is-dir = entry.is-dir;
+                                        root.row-menu-open = true;
                                     }
                                 }
                             }
@@ -651,6 +610,79 @@ export component SftpPanel inherits Rectangle {
                 height: parent.height;
                 overflow: clip;
                 width: parent.width - 16px;
+            }
+        }
+    }
+
+    // --- 行右键菜单（顶层单实例覆盖层）------------------------------------
+    // 单实例 + if 切换，提到 for 行外：删除/刷新重建 for 行时不会再销毁正在
+    // 显示的菜单（行内 PopupWindow 随宿主行被销毁会触发 Slint 1.8 panic，正是
+    // 「连续删除多个文件崩溃」的根因；参见 app.slint 下载弹窗同款规避注释）。
+    // 菜单只读右键时快照的 menu-* property，不依赖 for 的 entry 上下文。
+    if root.row-menu-open : Rectangle {
+        width: parent.width;
+        height: parent.height;
+
+        // 点击空白处或再次右键：关闭菜单（仿 PopupWindow 的 close-on-click）。
+        TouchArea {
+            clicked => { root.row-menu-open = false; }
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down
+                        && ev.button == PointerEventButton.right) {
+                    root.row-menu-open = false;
+                }
+            }
+        }
+
+        Rectangle {
+            // clamp 进面板，避免贴边时菜单溢出到不可见区域。
+            x: min(root.menu-x, parent.width - self.width - 4px);
+            y: min(root.menu-y, parent.height - self.height - 4px);
+            width: 132px;
+            height: 6 * 27px + 8px;
+            background: Theme.bg-panel;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #00000060;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 1px;
+                SftpMenuItem {
+                    label: @tr("Open");
+                    clicked => {
+                        root.row-menu-open = false;
+                        if (root.menu-is-dir) {
+                            root.loading-target = root.menu-path;
+                            root.navigate(root.menu-path);
+                        } else {
+                            root.edit(root.menu-path);
+                        }
+                    }
+                }
+                SftpMenuItem {
+                    label: @tr("Download");
+                    clicked => { root.row-menu-open = false; root.download(root.menu-path); }
+                }
+                SftpMenuItem {
+                    label: @tr("Copy path");
+                    clicked => { root.row-menu-open = false; root.copy-path(root.menu-path); }
+                }
+                SftpMenuItem {
+                    label: @tr("Rename");
+                    clicked => { root.row-menu-open = false; root.open-name-dialog(0, root.menu-path, root.menu-name); }
+                }
+                SftpMenuItem {
+                    label: @tr("Delete");
+                    tint: #d86c6c;
+                    clicked => { root.row-menu-open = false; root.delete(root.menu-path); }
+                }
+                SftpMenuItem {
+                    label: @tr("Refresh");
+                    clicked => { root.row-menu-open = false; root.refresh(root.current-path); }
+                }
             }
         }
     }
