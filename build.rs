@@ -10,6 +10,11 @@ fn main() {
     let build_date = chrono::Local::now().format("%Y-%m-%d").to_string();
     println!("cargo:rustc-env=LIBSSH_BUILD_DATE={build_date}");
 
+    // slint-build 只为入口 app.slint 输出 rerun-if-changed，不会追踪它 import
+    // 的其它 .slint 文件（sftp_panel/theme 等）。显式监听整个 ui/ 目录，避免改了
+    // 被 import 的 .slint 却命中增量缓存、不重编译的 stale build。
+    println!("cargo:rerun-if-changed=ui");
+
     slint_build::compile_with_config(
         "ui/app.slint",
         slint_build::CompilerConfiguration::new()
