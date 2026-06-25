@@ -295,6 +295,25 @@ pub(crate) fn keepalive_client_config() -> client::Config {
 /// 终端 run_session、SFTP run_sftp、连通性 test_connection 三处共用，防止分叉。
 pub(crate) const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// 唤醒探测：进程被挂起（系统睡眠 / App Nap 等）时，tokio 基于单调时钟的定时器随进程
+/// 冻结；唤醒后 keepalive 需重新累计 keepalive_interval × keepalive_max（最长 180s）才能
+/// 判定半开连接，这段窗口里 channel.wait() 仍挂起、UI 卡「已连接」、输入无回显也不重连
+/// （见 keepalive_client_config 注释）。run_session 用挂钟时间（SystemTime）跨轮询的真实
+/// 流逝识别「刚从挂起恢复」，立即主动探测连接活性，把这段被动等待从最长 180s 收敛到数秒。
+///
+/// 轮询间隔：正常运行每 PROBE_INTERVAL 比较一次挂钟时间（开销仅一次 SystemTime 相减）。
+const PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+/// 跨轮询真实流逝超过此值即判定刚从挂起/睡眠恢复（远大于 PROBE_INTERVAL 的正常抖动）。
+const RESUME_GAP: std::time::Duration = std::time::Duration::from_secs(45);
+/// 恢复后主动探测（开一条临时通道）的超时：半开连接收不到 channel-open 确认即在此超时。
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 距上次探测的真实（挂钟）流逝是否大到说明进程刚从挂起/睡眠恢复，需主动探测连接活性。
+/// 抽成纯函数便于单测锚定阈值不变量（本项目惯例：纯函数 + 单测）。
+fn resumed_from_suspend(real_elapsed: std::time::Duration) -> bool {
+    real_elapsed >= RESUME_GAP
+}
+
 /// 按会话配置测试连通性：TCP/代理直连 + SSH 握手 + 身份认证，成功即断开。
 /// 整体 20 秒超时（覆盖 DNS、TCP、握手、认证任何一步卡住的情况）。
 pub async fn test_connection(session: Session) -> Result<()> {
@@ -752,6 +771,14 @@ async fn run_session(
         std::collections::HashMap::new();
     let mut prev_net_at = std::time::Instant::now();
 
+    // 唤醒探测计时器：正常运行每 PROBE_INTERVAL tick 一次，仅做一次挂钟时间比较；真正的
+    // 连接探测只在检测到「刚从挂起/睡眠恢复」时才发生（见下方 probe_timer 分支）。
+    // interval 首个 tick 立即就绪，先消费掉；Skip 防睡眠期间积压的 tick 在唤醒后暴发。
+    let mut probe_timer = tokio::time::interval(PROBE_INTERVAL);
+    probe_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    probe_timer.tick().await;
+    let mut last_probe = std::time::SystemTime::now();
+
     loop {
         tokio::select! {
             cmd = commands.recv() => {
@@ -839,6 +866,23 @@ async fn run_session(
                         mon_channel = None;
                     }
                     _ => {}
+                }
+            }
+            _ = probe_timer.tick() => {
+                // 唤醒探测：进程被挂起（系统睡眠 / App Nap）时 tokio 定时器随之冻结。唤醒后
+                // 用挂钟时间跨 tick 的真实流逝识别「刚恢复」——此刻连接可能已半开，而 keepalive
+                // 最长还需 180s 才判定（期间 channel.wait() 永久挂起、UI 卡「已连接」、输入无回显
+                // 也不重连，见 keepalive_client_config 注释）。于是主动开一条临时通道探测：半开则
+                // 收不到 channel-open 确认、PROBE_TIMEOUT 超时即 break，走下方 Closed 流程触发自动
+                // 重连，把最长 180s 的「假死」收敛到数秒。
+                let now = std::time::SystemTime::now();
+                let real_elapsed = now.duration_since(last_probe).unwrap_or_default();
+                last_probe = now;
+                if resumed_from_suspend(real_elapsed) {
+                    match tokio::time::timeout(PROBE_TIMEOUT, handle.channel_open_session()).await {
+                        Ok(Ok(_probe_ch)) => {} // 连接仍活；临时通道 drop 时自动关闭
+                        _ => break, // 半开 / 超时 / 错误：判定断开，走下方 Closed → 自动重连
+                    }
                 }
             }
             maybe_fwd = fwd_rx.recv() => {
@@ -1235,6 +1279,38 @@ mod tests {
             CONNECT_TIMEOUT >= std::time::Duration::from_secs(5)
                 && CONNECT_TIMEOUT <= std::time::Duration::from_secs(60),
             "连接超时应在 5~60 秒之间，实际 {CONNECT_TIMEOUT:?}"
+        );
+    }
+
+    #[test]
+    fn resumed_from_suspend_only_fires_after_real_gap() {
+        // 唤醒探测的触发判定：正常运行时轮询间隔（含调度抖动）不应判为「刚恢复」，
+        // 否则会在健康连接上无谓地反复开临时通道。只有跨轮询的真实流逝出现大跳变
+        // （系统睡眠 / App Nap 唤醒）才判定恢复、触发主动探测。
+        assert!(!resumed_from_suspend(std::time::Duration::ZERO));
+        assert!(!resumed_from_suspend(PROBE_INTERVAL));
+        assert!(!resumed_from_suspend(std::time::Duration::from_secs(30)));
+        assert!(resumed_from_suspend(RESUME_GAP));
+        assert!(resumed_from_suspend(std::time::Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn probe_thresholds_are_sane() {
+        // 阈值不变量：恢复判定阈值必须显著大于轮询间隔，留足调度抖动余量，避免前台
+        // 正常运行被误判为「刚恢复」；主动探测超时必须远小于被动 keepalive 的收敛时间
+        // （keepalive_interval 60s × keepalive_max 3 = 180s），否则这层主动探测形同虚设；
+        // 探测超时也不应过短，给一次 channel-open 往返留出余量，免得误杀健康连接。
+        assert!(
+            RESUME_GAP > PROBE_INTERVAL,
+            "恢复阈值需大于轮询间隔：RESUME_GAP={RESUME_GAP:?} PROBE_INTERVAL={PROBE_INTERVAL:?}"
+        );
+        assert!(
+            PROBE_TIMEOUT < std::time::Duration::from_secs(180),
+            "探测超时需远小于 keepalive 被动收敛的 180s，实际 {PROBE_TIMEOUT:?}"
+        );
+        assert!(
+            PROBE_TIMEOUT >= std::time::Duration::from_secs(2),
+            "探测超时需给一次握手往返留余量，实际 {PROBE_TIMEOUT:?}"
         );
     }
 
