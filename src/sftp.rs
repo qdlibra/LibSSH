@@ -350,8 +350,9 @@ async fn run_sftp(
                             )));
                         }
                         Err(e) => {
+                            tracing::warn!("sftp download dir {remote} failed: {e:#}");
                             let _ = events.send(SessionEvent::SftpStatus(format!(
-                                "{}: {e}",
+                                "{}: {e:#}",
                                 t("下载失败", "Download failed")
                             )));
                         }
@@ -369,9 +370,22 @@ async fn run_sftp(
                             )));
                         }
                         Err(e) => {
-                            emit_transfer(&events, &id, &filename, false, 0, 0, 2, &e.to_string());
+                            // 显示完整 error chain（{e:#}）而非仅顶层 context：anyhow 的 with_context
+                            // 会把底层 russh-sftp 错误（如 server 对 SSH_FXP_READ 返回的 Status、
+                            // 读超时、权限）藏在内层，只看顶层「read remote file」无法定位。见 2026-06-22 教训。
+                            tracing::warn!("sftp download {remote} failed: {e:#}");
+                            emit_transfer(
+                                &events,
+                                &id,
+                                &filename,
+                                false,
+                                0,
+                                0,
+                                2,
+                                &format!("{e:#}"),
+                            );
                             let _ = events.send(SessionEvent::SftpStatus(format!(
-                                "{}: {e}",
+                                "{}: {e:#}",
                                 t("下载失败", "Download failed")
                             )));
                         }
