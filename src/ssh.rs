@@ -742,8 +742,15 @@ async fn run_session(
             }
         }
     }
-    // 仅留各 acceptor 持有的 sender 克隆；它们全部退出后 fwd_rx 自然结束。
-    drop(fwd_tx);
+    // 保留 fwd_tx 存活至会话结束——它是 fwd_rx 的最后一个 sender。
+    // 切勿在此 drop:普通会话 session.tunnels 为空时上面的循环不执行，没有任何
+    // acceptor 克隆 sender；一旦 drop 掉这唯一的 fwd_tx，fwd_rx 即刻无 sender，
+    // 下面 select! 的 `fwd_rx.recv()` 会立即且永久返回 None，而该分支对 None 是
+    // no-op（不 break、不禁用），于是主 select! 每轮瞬间就绪 → 整个 run_session
+    // 退化为纯 CPU 忙循环（实测单会话吃满一核、idle wakeups 爆表）。
+    // 留住这个 sender 后，无转发请求时 recv() 正常挂起(Pending)，select! 得以休眠。
+    // 会话结束(loop break)时本绑定随栈释放，acceptor 的 tx.send 随之失败而退出。
+    let _keep_fwd_tx = fwd_tx;
 
     let mut prompt_injected = false;
     let mut echo_suppressor = EchoSuppressor::new();
